@@ -30,6 +30,9 @@
 #include <SPIFFS.h>
 #include "http_client.h"
 #include <api-client/display.h>
+#ifdef BAHNBRETT_LOCAL_RENDER
+#include <bahnbrett_local.h>
+#endif
 #include "driver/gpio.h"
 #include "esp_sntp.h"
 #include <nvs.h>
@@ -668,6 +671,9 @@ ApiDisplayInputs loadApiDisplayInputs(Preferences &preferences)
  */
 static https_request_err_e downloadAndShow()
 {
+#ifdef BAHNBRETT_LOCAL_RENDER
+  return bahnbrett_local_render();
+#endif
   IPAddress serverIP;
   String apiHostname = preferences.getString(PREFERENCES_API_URL, API_BASE_URL);
   apiHostname.replace("https://", "");
