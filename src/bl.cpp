@@ -214,6 +214,9 @@ void bl_init(void)
       break;
     case DoubleClick:
       double_click = true;
+#ifdef BAHNBRETT_LOCAL_RENDER
+      bahnbrett_trigger_easter_egg();
+#endif
       break;
     case ShortPress:
     case NoAction:

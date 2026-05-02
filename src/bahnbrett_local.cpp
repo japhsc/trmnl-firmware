@@ -16,6 +16,12 @@
 
 #include <vector>
 
+static bool g_show_easter_egg = false;
+
+void bahnbrett_trigger_easter_egg(void) {
+  g_show_easter_egg = true;
+}
+
 namespace {
 
 bool RenderAndPresent(const bahnbrett::DashboardConfig& config,
@@ -41,6 +47,18 @@ https_request_err_e bahnbrett_local_render(void)
   config.width = static_cast<int>(display_width());
   config.height = static_cast<int>(display_height());
   config.format = bahnbrett::PixelFormat::kMono1;
+
+  if (g_show_easter_egg) {
+    g_show_easter_egg = false;
+    bahnbrett::Bitmap bitmap = bahnbrett::RenderEasterEgg(config);
+    bahnbrett::DisplayTarget target;
+    target.width = config.width;
+    target.height = config.height;
+    target.format = config.format;
+    bahnbrett::TrmnlBmpBackend backend(target);
+    backend.Present(bitmap);
+    return HTTPS_SUCCESS;
+  }
 
   bahnbrett::RenderStatus status;
   std::vector<bahnbrett::WidgetData> data;
