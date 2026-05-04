@@ -11,7 +11,7 @@
 #include "../../../../../src/renderer.cpp"
 #include "../../../../../src/time_utils.cpp"
 #include "../../../../../src/transport_rest_provider.cpp"
-#include "../../../../../src/http_client_arduino.cpp"
 #include "../../../../../src/trmnl_bmp_backend.cpp"
+#include "http_client_arduino.cpp"
 
 #endif  // BAHNBRETT_LOCAL_RENDER

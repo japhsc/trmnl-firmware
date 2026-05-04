@@ -438,8 +438,19 @@ void bl_init(void)
 
   log_retry = true;
 
+  https_request_err_e request_result;
+
+#ifdef BAHNBRETT_LOCAL_RENDER
+  request_result = bahnbrett_local_render();
+
+  // display go to sleep
+  display_sleep();
+  goToSleep();
+
+#else
   // OTA checking, image checking and drawing
-  https_request_err_e request_result = downloadAndShow();
+  request_result = downloadAndShow();
+
   Log.info("%s [%d]: request result - %d\r\n", __FILE__, __LINE__, request_result);
 
   if (request_result == HTTPS_IMAGE_FILE_TOO_BIG)
@@ -593,6 +604,8 @@ void bl_init(void)
     goToSleep();
   else
     ESP.restart();
+
+#endif
 }
 
 /**
@@ -674,9 +687,6 @@ ApiDisplayInputs loadApiDisplayInputs(Preferences &preferences)
  */
 static https_request_err_e downloadAndShow()
 {
-#ifdef BAHNBRETT_LOCAL_RENDER
-  return bahnbrett_local_render();
-#endif
   IPAddress serverIP;
   String apiHostname = preferences.getString(PREFERENCES_API_URL, API_BASE_URL);
   apiHostname.replace("https://", "");

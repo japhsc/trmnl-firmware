@@ -1355,6 +1355,7 @@ void display_show_image(uint8_t *image_buffer, int data_size, bool bWait)
         if (*(uint16_t *)image_buffer == BB_BITMAP_MARKER)
         {
             // G5 compressed image
+            Log_info("Drawing Group5 image");
             BB_BITMAP *pBBB = (BB_BITMAP *)image_buffer;
 #ifdef BB_EPAPER
             bbep.allocBuffer(false);
@@ -1370,6 +1371,7 @@ void display_show_image(uint8_t *image_buffer, int data_size, bool bWait)
         }
         else
         {
+            Log_info("Drawing BMP image");
          // This work-around is due to a lack of RAM; the correct method would be to use loadBMP()
             flip_image(image_buffer+62, bbep.width(), bbep.height(), false); // fix bottom-up bitmap images
 #ifdef BB_EPAPER
@@ -1402,7 +1404,9 @@ void display_show_image(uint8_t *image_buffer, int data_size, bool bWait)
     if (!bWait) iRefreshMode = REFRESH_FAST; // fast update when showing loading screen
     Log_info("%s [%d]: EPD refresh mode: %d\r\n", __FILE__, __LINE__, iRefreshMode);
     bbep.setLightSleep(true);
+    uint32_t refresh_start_ms = millis();
     bbep.refresh(iRefreshMode, bWait);
+    Log_info("[display] refresh took %lu ms (opTime=%d)", (unsigned long)(millis() - refresh_start_ms), bbep.opTime());
     if ((bbep.getPanelType() == EP426_800x480 || bbep.getPanelType() == EP397_800x480) && iRefreshMode == REFRESH_PARTIAL) {
         i426Workaround = 1; // need to re-initialize the controller for another update before sleeping
     }
