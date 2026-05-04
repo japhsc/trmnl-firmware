@@ -90,7 +90,7 @@ HttpResponse ArduinoHttpClient::Get(const std::string& url) {
   {
     // Scoped block ensures HTTPClient is destroyed before client cleanup
     HTTPClient http;
-    http.setTimeout(8000);
+    http.setTimeout(15000);
     http.setReuse(false);
 
     if (!http.begin(*client, url.c_str())) {
@@ -108,7 +108,7 @@ HttpResponse ArduinoHttpClient::Get(const std::string& url) {
     BAHNBRETT_HTTP_LOG("GET done code=%d size=%d", code, content_len);
 
     if (code > 0) {
-      constexpr size_t kMaxBody = 48 * 1024;
+      constexpr size_t kMaxBody = 128 * 1024;
       if (content_len < 0 || static_cast<size_t>(content_len) <= kMaxBody) {
         if (content_len > 0) {
           response.body.reserve(static_cast<size_t>(content_len));
