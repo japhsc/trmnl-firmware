@@ -72,13 +72,6 @@ bahnbrett::Bitmap MakeStaticBitmap(const bahnbrett::DashboardConfig& config) {
 
 bool PresentBitmap(const bahnbrett::DashboardConfig& config,
                    bahnbrett::Bitmap* bitmap) {
-  // Force a full e-ink refresh. display_show_image() picks REFRESH_PARTIAL
-  // for BMPs unless this flag is true (display.cpp:1387-1394 forces
-  // iUpdateCount=1, which never trips the (iUpdateCount & 7) == 0 path).
-  // Without this we get a partial update that leaves the boot logo
-  // untouched on screen.
-  apiDisplayResult.response.maximum_compatibility = true;
-
   bahnbrett::DisplayTarget target;
   target.width = config.width;
   target.height = config.height;
