@@ -90,7 +90,8 @@ HttpResponse ArduinoHttpClient::Get(const std::string& url) {
   {
     // Scoped block ensures HTTPClient is destroyed before client cleanup
     HTTPClient http;
-    http.setTimeout(15000);
+    http.setConnectTimeout(10000);
+    http.setTimeout(30000);
     http.setReuse(false);
 
     if (!http.begin(*client, url.c_str())) {
@@ -126,7 +127,8 @@ HttpResponse ArduinoHttpClient::Get(const std::string& url) {
           response.status = 0;
         }
       } else {
-        BAHNBRETT_HTTP_LOG("oversize content_len=%d", content_len);
+        BAHNBRETT_HTTP_LOG("oversize content_len=%d, rejecting", content_len);
+        response.status = 0;
       }
     }
     http.end();
