@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <cstdlib>
 #include <api-client/display.h>
 #include <display.h>
 #include <esp_heap_caps.h>
@@ -123,6 +124,11 @@ https_request_err_e bahnbrett_local_render(void)
   bahnbrett_log_heap("entry");
 
   bahnbrett::DashboardConfig config = bahnbrett::DefaultDashboardConfig();
+
+  // configTime(0,0,...) in bl.cpp leaves TZ as UTC; apply the POSIX TZ string
+  // from config so localtime_r returns the correct local time (incl. DST).
+  setenv("TZ", config.timezone.c_str(), 1);
+  tzset();
   config.width = static_cast<int>(display_width());
   config.height = static_cast<int>(display_height());
   config.format = bahnbrett::PixelFormat::kMono1;
