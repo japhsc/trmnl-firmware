@@ -16,13 +16,19 @@ class HttpClient {
 };
 
 #ifdef ARDUINO
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+
 class ArduinoHttpClient : public HttpClient {
  public:
-  explicit ArduinoHttpClient(bool insecure_tls) : insecure_tls_(insecure_tls) {}
+  explicit ArduinoHttpClient(bool insecure_tls);
+  ~ArduinoHttpClient() override;
   HttpResponse Get(const std::string& url) override;
 
  private:
-  bool insecure_tls_ = true;
+  bool insecure_tls_;
+  WiFiClientSecure client_;
+  HTTPClient http_;
 };
 #endif
 

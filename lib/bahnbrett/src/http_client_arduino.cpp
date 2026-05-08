@@ -2,9 +2,7 @@
 
 #if defined(ARDUINO)
 
-#include <HTTPClient.h>
 #include <Stream.h>
-#include <WiFiClientSecure.h>
 
 #include <algorithm>
 
@@ -64,78 +62,61 @@ class StringSink : public Stream {
 
 }  // namespace
 
+ArduinoHttpClient::ArduinoHttpClient(bool insecure_tls) : insecure_tls_(insecure_tls) {
+  if (insecure_tls_) {
+    client_.setInsecure();
+  }
+  http_.setConnectTimeout(10000);
+  http_.setTimeout(30000);
+  // Keep the TLS session alive across all requests in one render cycle so
+  // we pay for the handshake only once. Without this, each Get() allocates
+  // a fresh mbedTLS context (~40 KB), which fragments the heap enough that
+  // subsequent connections fail with code=-1.
+  http_.setReuse(true);
+}
+
+ArduinoHttpClient::~ArduinoHttpClient() {
+  http_.end();
+  client_.stop();
+}
+
 HttpResponse ArduinoHttpClient::Get(const std::string& url) {
   HttpResponse response;
 
-  // Determine if HTTPS is needed
-  bool isHttps = (url.find("https://") != std::string::npos);
-
-  // Allocate the appropriate WiFi client on the heap for proper scoping/cleanup
-  WiFiClient* client = nullptr;
-  if (isHttps) {
-    WiFiClientSecure* secureClient = new WiFiClientSecure();
-    if (insecure_tls_) {
-      secureClient->setInsecure();
-    }
-    client = secureClient;
-  } else {
-    client = new WiFiClient();
-  }
-
-  if (!client) {
-    BAHNBRETT_HTTP_LOG("Failed to allocate WiFiClient");
+  if (!http_.begin(client_, url.c_str())) {
+    BAHNBRETT_HTTP_LOG("begin() failed url=%s", url.c_str());
     return response;
   }
 
-  {
-    // Scoped block ensures HTTPClient is destroyed before client cleanup
-    HTTPClient http;
-    http.setConnectTimeout(10000);
-    http.setTimeout(30000);
-    http.setReuse(false);
+  BAHNBRETT_HTTP_LOG("GET start");
+  int code = http_.GET();
+  response.status = code;
+  int content_len = http_.getSize();
+  BAHNBRETT_HTTP_LOG("GET done code=%d size=%d", code, content_len);
 
-    if (!http.begin(*client, url.c_str())) {
-      BAHNBRETT_HTTP_LOG("begin() failed url=%s", url.c_str());
-      http.end();
-      client->stop();
-      delete client;
-      return response;
-    }
-
-    BAHNBRETT_HTTP_LOG("GET start");
-    int code = http.GET();
-    response.status = code;
-    int content_len = http.getSize();
-    BAHNBRETT_HTTP_LOG("GET done code=%d size=%d", code, content_len);
-
-    if (code > 0) {
-      constexpr size_t kMaxBody = 128 * 1024;
-      if (content_len < 0 || static_cast<size_t>(content_len) <= kMaxBody) {
-        if (content_len > 0) {
-          response.body.reserve(static_cast<size_t>(content_len));
-        }
-        // writeToStream handles Transfer-Encoding: chunked. Feeding it our
-        // sink avoids the double-allocation that getString() forced.
-        StringSink sink(&response.body, kMaxBody);
-        int written = http.writeToStream(&sink);
-        BAHNBRETT_HTTP_LOG("writeToStream returned %d body=%u overflow=%d",
-                           written, (unsigned)response.body.size(),
-                           sink.overflow() ? 1 : 0);
-        if (sink.overflow()) {
-          response.body.clear();
-          response.body.shrink_to_fit();
-          response.status = 0;
-        }
-      } else {
-        BAHNBRETT_HTTP_LOG("oversize content_len=%d, rejecting", content_len);
+  if (code > 0) {
+    constexpr size_t kMaxBody = 128 * 1024;
+    if (content_len < 0 || static_cast<size_t>(content_len) <= kMaxBody) {
+      if (content_len > 0) {
+        response.body.reserve(static_cast<size_t>(content_len));
+      }
+      // writeToStream handles Transfer-Encoding: chunked. Feeding it our
+      // sink avoids the double-allocation that getString() forced.
+      StringSink sink(&response.body, kMaxBody);
+      int written = http_.writeToStream(&sink);
+      BAHNBRETT_HTTP_LOG("writeToStream returned %d body=%u overflow=%d",
+                         written, (unsigned)response.body.size(),
+                         sink.overflow() ? 1 : 0);
+      if (sink.overflow()) {
+        response.body.clear();
+        response.body.shrink_to_fit();
         response.status = 0;
       }
+    } else {
+      BAHNBRETT_HTTP_LOG("oversize content_len=%d, rejecting", content_len);
+      response.status = 0;
     }
-    http.end();
   }
-
-  client->stop();
-  delete client;
 
   BAHNBRETT_HTTP_LOG("Get() return status=%d body=%u", response.status,
                      (unsigned)response.body.size());
