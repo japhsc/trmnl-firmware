@@ -2,6 +2,11 @@
 
 #include <string>
 
+#ifdef ARDUINO
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#endif
+
 namespace bahnbrett {
 
 struct HttpResponse {
@@ -16,9 +21,6 @@ class HttpClient {
 };
 
 #ifdef ARDUINO
-#include <HTTPClient.h>
-#include <WiFiClientSecure.h>
-
 class ArduinoHttpClient : public HttpClient {
  public:
   explicit ArduinoHttpClient(bool insecure_tls);
