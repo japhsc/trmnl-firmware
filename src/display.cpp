@@ -1386,7 +1386,6 @@ void display_show_image(uint8_t *image_buffer, int data_size, bool bWait)
 #endif
         iRefreshMode = REFRESH_PARTIAL;
 #endif
-        iUpdateCount = 1; // use partial update
     }
     Log_info("Display refresh start");
 #ifdef BB_EPAPER
