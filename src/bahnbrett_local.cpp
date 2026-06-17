@@ -146,7 +146,10 @@ namespace {
 // `scale`×`scale` pixels. Returns the total pixel height used (size * scale).
 int DrawQRCode(bahnbrett::Bitmap& bitmap, int ox, int oy, int scale,
                const char* text, uint8_t fg) {
-  constexpr int kVersion = 2;
+  // Version 4: 33×33 modules, Low ECC = ~62 bytes in byte mode.
+  // WiFi QR strings contain ';' which forces byte mode (not alphanumeric),
+  // so Version 2 (32 byte limit) silently overflows.
+  constexpr int kVersion = 4;
   uint8_t buf[qrcode_getBufferSize(kVersion)];
   QRCode qr;
   qrcode_initText(&qr, buf, kVersion, ECC_LOW, text);
@@ -202,8 +205,13 @@ void bahnbrett_render_config_screen(void) {
   bitmap.DrawTextScaledF(left, y, "Timeout: 5 minutes", kBlack, 1.4f);
 
   // ── Right column: QR codes ──
+  // QR version 4: 17 + 4*4 = 33 modules. At 4px scale = 132×132 px.
+  // Version 2 (25×25) was too small — the ';' chars force byte mode (32 byte
+  // limit at Low ECC), and the WiFi string overflows silently.
   constexpr int kQrScale = 4;
-  int qr_right = w - 40;  // right edge of QR codes
+  constexpr int kQrModules = 33;  // version 4
+  constexpr int qr_w = kQrModules * kQrScale;
+  int qr_right = w - 40;
 
   auto drawQrLabel = [&](int qx, int qy_below, int qr_w, const std::string& label) {
     int tw = static_cast<int>(label.size() * (bahnbrett::kFont5x7Width + 1) * 1.4f);
@@ -211,7 +219,6 @@ void bahnbrett_render_config_screen(void) {
   };
 
   // WiFi QR code
-  int qr_w = 25 * kQrScale;  // 100 px for version 2
   int wifi_qr_x = qr_right - qr_w;
   int wifi_qr_y = bar_h + 30;
   int wifi_h = DrawQRCode(bitmap, wifi_qr_x, wifi_qr_y, kQrScale,
