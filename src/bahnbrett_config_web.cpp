@@ -73,6 +73,14 @@ static const char kConfigPageHtml[] PROGMEM = R"=====(
 <input type="number" id="grid_rows" min="0" max="6">
 <div class="hint">0 = auto</div>
 
+<label for="col_width_ratios">Column width ratios</label>
+<input type="text" id="col_width_ratios" placeholder="1,1,1">
+<div class="hint">Comma-separated weights (1-10). Empty = equal widths. Only active when columns are explicit.</div>
+
+<label for="row_height_ratios">Row height ratios</label>
+<input type="text" id="row_height_ratios" placeholder="1,1,1">
+<div class="hint">Comma-separated weights (1-10). Empty = equal heights. Only active when rows are explicit.</div>
+
 <label for="max_rows_per_widget">Max rows per widget</label>
 <input type="number" id="max_rows_per_widget" min="1" max="60">
 
@@ -169,6 +177,8 @@ function populate() {
   setLines('station_names', cfg.station_names);
   setVal('grid_cols', cfg.grid_cols);
   setVal('grid_rows', cfg.grid_rows);
+  setVal('col_width_ratios', Array.isArray(cfg.col_width_ratios) ? cfg.col_width_ratios.join(',') : '');
+  setVal('row_height_ratios', Array.isArray(cfg.row_height_ratios) ? cfg.row_height_ratios.join(',') : '');
   setVal('max_rows_per_widget', cfg.max_rows_per_widget);
   setVal('max_departures_per_group', cfg.max_departures_per_group);
   setVal('aggregate_by_destination', cfg.aggregate_by_destination);
@@ -211,6 +221,14 @@ function showStatus(msg, ok) {
   s.style.display = 'block';
 }
 
+function parseRatios(str) {
+  if (!str.trim()) return [];
+  return str.split(',').map(function(s) {
+    var n = parseInt(s.trim(), 10);
+    return (isNaN(n) || n < 1) ? 1 : (n > 10 ? 10 : n);
+  });
+}
+
 function getFormData() {
   var getLines = function(id) {
     var v = document.getElementById(id).value.trim();
@@ -220,6 +238,8 @@ function getFormData() {
     station_names: getLines('station_names'),
     grid_cols: parseInt(document.getElementById('grid_cols').value) || 0,
     grid_rows: parseInt(document.getElementById('grid_rows').value) || 0,
+    col_width_ratios: parseRatios(document.getElementById('col_width_ratios').value),
+    row_height_ratios: parseRatios(document.getElementById('row_height_ratios').value),
     max_rows_per_widget: parseInt(document.getElementById('max_rows_per_widget').value) || 10,
     max_departures_per_group: parseInt(document.getElementById('max_departures_per_group').value) || 3,
     aggregate_by_destination: document.getElementById('aggregate_by_destination').checked,
@@ -325,6 +345,23 @@ std::string CurrentConfigJson() {
   jb.KeyBool("show_delays", cfg.show_delays);
   jb.KeyNumber("grid_cols", cfg.grid_cols);
   jb.KeyNumber("grid_rows", cfg.grid_rows);
+
+  // col_width_ratios (int array)
+  jb.Key("col_width_ratios");
+  jb.StartArray();
+  for (size_t i = 0; i < cfg.col_width_ratios.size(); ++i)
+    jb.Number(cfg.col_width_ratios[i]);
+  jb.EndArray();
+  jb.Comma();
+
+  // row_height_ratios (int array)
+  jb.Key("row_height_ratios");
+  jb.StartArray();
+  for (size_t i = 0; i < cfg.row_height_ratios.size(); ++i)
+    jb.Number(cfg.row_height_ratios[i]);
+  jb.EndArray();
+  jb.Comma();
+
   jb.KeyString("remote_config_url", remote_url);
   jb.KeyNumber("remote_config_interval", remote_interval);
   jb.EndObject();
@@ -371,6 +408,18 @@ bool SaveConfigFromJson(const std::string& json_str) {
     }
     return out;
   };
+  auto getIntVec = [&](const char* key) -> std::vector<int> {
+    const auto* v = root.Find(key);
+    std::vector<int> out;
+    if (v && v->type == bahnbrett::JsonValue::Type::kArray) {
+      for (const auto& item : v->array) {
+        if (item.type == bahnbrett::JsonValue::Type::kNumber) {
+          out.push_back(static_cast<int>(item.number_value));
+        }
+      }
+    }
+    return out;
+  };
 
   config.station_names = getStrVec("station_names");
   if (config.station_names.empty()) {
@@ -378,6 +427,8 @@ bool SaveConfigFromJson(const std::string& json_str) {
   }
   config.grid_cols = getInt("grid_cols", 0);
   config.grid_rows = getInt("grid_rows", 0);
+  config.col_width_ratios = getIntVec("col_width_ratios");
+  config.row_height_ratios = getIntVec("row_height_ratios");
   config.max_rows_per_widget = getInt("max_rows_per_widget", 10);
   config.max_departures_per_group = getInt("max_departures_per_group", 3);
   config.aggregate_by_destination = getBool("aggregate_by_destination", true);
