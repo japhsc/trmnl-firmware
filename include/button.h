@@ -2,11 +2,12 @@ enum ButtonPressResult
 {
   LongPress,
   DoubleClick,
+  TripleClick,
   ShortPress,
   SoftReset,
   NoAction
 };
-extern const char *ButtonPressResultNames[4];
+extern const char *ButtonPressResultNames[6];
 
 ButtonPressResult read_button_presses();
 

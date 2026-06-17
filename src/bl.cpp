@@ -32,6 +32,7 @@
 #include <api-client/display.h>
 #ifdef BAHNBRETT_LOCAL_RENDER
 #include <bahnbrett_local.h>
+#include <bahnbrett_config_web.h>
 #endif
 #include "driver/gpio.h"
 #include "esp_sntp.h"
@@ -73,6 +74,9 @@ esp_sleep_wakeup_cause_t wakeup_reason = ESP_SLEEP_WAKEUP_UNDEFINED; // wake-up 
 MSG current_msg = NONE;
 SPECIAL_FUNCTION special_function = SF_NONE;
 RTC_DATA_ATTR uint8_t need_to_refresh_display = 1;
+#ifdef BAHNBRETT_LOCAL_RENDER
+RTC_DATA_ATTR bool g_bahnbrett_config_mode = false;
+#endif
 extern int iTempProfile;
 Preferences preferences;
 PreferencesPersistence preferencesPersistence(preferences);
@@ -221,6 +225,11 @@ void bl_init(void)
     case ShortPress:
     case NoAction:
       break;
+    case TripleClick:
+#ifdef BAHNBRETT_LOCAL_RENDER
+      g_bahnbrett_config_mode = true;
+#endif
+      break;
     case SoftReset:
       resetDeviceCredentials();
     }
@@ -340,6 +349,29 @@ void bl_init(void)
   // showMessageWithLogo(MSG_FORMAT_ERROR);
   // display_show_msg(storedLogoOrDefault(1), WIFI_CONNECT, "ABCDEF", true, FW_VERSION_STRING, "Hello World!");
   // wifiErrorDeepSleep();
+
+#ifdef BAHNBRETT_LOCAL_RENDER
+  if (g_bahnbrett_config_mode) {
+    g_bahnbrett_config_mode = false;
+    bahnbrett_render_config_screen();
+    bool config_saved = bahnbrett_config_web_start();
+    if (config_saved) {
+      Log_info("[bahnbrett] Config mode: saved, rebooting to apply");
+      display_sleep();
+      ESP.restart();
+    }
+    Log_info("[bahnbrett] Config mode: cancelled or timed out, sleeping");
+    display_sleep();
+    goToSleep();
+  }
+
+  // Easter egg (double-click) renders immediately — no WiFi or API needed.
+  if (bahnbrett_render_easter_egg_now()) {
+    Log_info("[bahnbrett] Easter egg rendered, sleeping");
+    display_sleep();
+    goToSleep();
+  }
+#endif
 
   WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
 

@@ -37,6 +37,25 @@ static ButtonPressResult wait_for_second_press(unsigned long start_time) {
         return long_press_result;
       }
 
+      // Second press confirmed. Check for a third press to distinguish
+      // double-click from triple-click.
+      auto second_release_time = millis();
+      while (millis() - second_release_time < BUTTON_DOUBLE_CLICK_WINDOW) {
+        if (digitalRead(PIN_INTERRUPT) == LOW) {
+          auto third_press_start = millis();
+          auto third_duration = wait_for_button_release(third_press_start);
+
+          ButtonPressResult third_long = classify_press_duration(third_duration);
+          if (third_long != NoAction) {
+            return third_long;
+          }
+
+          Log_info("Button time=%lu detected triple-click", millis() - start_time);
+          return TripleClick;
+        }
+        delay(10);
+      }
+
       Log_info("Button time=%lu detected double-click", millis() - start_time);
       return DoubleClick;
     }
@@ -82,5 +101,7 @@ ButtonPressResult read_button_presses()
 const char *ButtonPressResultNames[] = {
     "LongPress",
     "DoubleClick",
+    "TripleClick",
     "ShortPress",
-    "SoftReset"};
+    "SoftReset",
+    "NoAction"};

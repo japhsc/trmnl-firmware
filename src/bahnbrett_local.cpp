@@ -13,11 +13,15 @@
 #include <bahnbrett/bahnbrett.h>
 #include <bahnbrett/bmp_builder.h>
 #include <bahnbrett/config.h>
+#include <bahnbrett/config_store.h>
 #include <bahnbrett/http_client.h>
+#include <bahnbrett/json.h>
 #include <bahnbrett/renderer.h>
 #include <bahnbrett/time_utils.h>
 #include <bahnbrett/transport_rest_provider.h>
 #include <bahnbrett/trmnl_bmp_backend.h>
+
+#include <Preferences.h>
 
 #include <vector>
 
@@ -118,12 +122,78 @@ bool RenderAndPresent(const bahnbrett::DashboardConfig& config,
 
 }  // namespace
 
+bool bahnbrett_render_easter_egg_now(void) {
+  if (!g_show_easter_egg) return false;
+  g_show_easter_egg = false;
+
+  bahnbrett::DashboardConfig config = bahnbrett::DefaultDashboardConfig();
+  config.width = static_cast<int>(display_width());
+  config.height = static_cast<int>(display_height());
+  config.format = bahnbrett::PixelFormat::kMono1;
+  config.bitmap_header_pad = bahnbrett::kBmpHeaderSize;
+
+  bahnbrett::Bitmap bitmap = MakeStaticBitmap(config);
+  bahnbrett::RenderEasterEggInto(bitmap, config);
+  return PresentBitmap(config, &bitmap);
+}
+
+void bahnbrett_render_config_screen(void) {
+  bahnbrett::DashboardConfig config = bahnbrett::DefaultDashboardConfig();
+  config.width = static_cast<int>(display_width());
+  config.height = static_cast<int>(display_height());
+  config.format = bahnbrett::PixelFormat::kMono1;
+  config.bitmap_header_pad = bahnbrett::kBmpHeaderSize;
+
+  bahnbrett::Bitmap bitmap = MakeStaticBitmap(config);
+  int w = bitmap.width();
+  int h = bitmap.height();
+
+  // White background. Use 255 (kWhite) — in 1-bpp mode this fills all 8 pixels
+  // per byte as 1 (white). Using 1 would only set 1 of 8 pixels.
+  constexpr uint8_t kWhite = 255;
+  constexpr uint8_t kBlack = 0;
+  bitmap.Clear(kWhite);
+
+  // Top bar (black strip).
+  int bar_h = 60;
+  bitmap.FillRect(0, 0, w, bar_h, kBlack);
+
+  // Title in top bar (white on black).
+  bitmap.DrawTextScaled(20, 12, "Bahnbrett", kWhite, 3);
+  bitmap.DrawTextScaled(20, 34, "Configuration", kWhite, 2);
+
+  // Section: connection info.
+  int y = bar_h + 30;
+  int left = 30;
+  bitmap.DrawTextScaledF(left, y, "Connect to WiFi:", kBlack, 1.8f);
+  y += 40;
+  bitmap.DrawTextScaledF(left + 20, y, "Bahnbrett-Config", kBlack, 2.0f);
+
+  y += 50;
+  bitmap.DrawTextScaledF(left, y, "Open in browser:", kBlack, 1.8f);
+  y += 40;
+  bitmap.DrawTextScaledF(left + 20, y, "http://10.254.0.1", kBlack, 2.0f);
+
+  y += 60;
+  bitmap.DrawTextScaledF(left, y, "Timeout: 5 minutes", kBlack, 1.5f);
+
+  // Footer hint.
+  int footer_y = h - 40;
+  bitmap.DrawTextScaledF(left, footer_y, "Triple-click the button to enter this mode", kBlack, 1.2f);
+
+  // Thin separator line above footer.
+  bitmap.FillRect(0, footer_y - 15, w, 2, kBlack);
+
+  PresentBitmap(config, &bitmap);
+}
+
 https_request_err_e bahnbrett_local_render(void)
 {
   Log_info("[bahnbrett] bahnbrett_local_render entry");
   bahnbrett_log_heap("entry");
 
-  bahnbrett::DashboardConfig config = bahnbrett::DefaultDashboardConfig();
+  // Load config from NVS (merged onto defaults).
+  bahnbrett::DashboardConfig config = bahnbrett::LoadEffectiveConfig();
 
   // configTime(0,0,...) in bl.cpp leaves TZ as UTC; apply the POSIX TZ string
   // from config so localtime_r returns the correct local time (incl. DST).
@@ -136,14 +206,8 @@ https_request_err_e bahnbrett_local_render(void)
   Log_info("[bahnbrett] config: w=%d h=%d format=mono1 header_pad=%d",
            config.width, config.height, config.bitmap_header_pad);
 
-  if (g_show_easter_egg) {
-    g_show_easter_egg = false;
-    Log_info("[bahnbrett] easter egg path");
-    bahnbrett::Bitmap bitmap = MakeStaticBitmap(config);
-    bahnbrett::RenderEasterEggInto(bitmap, config);
-    PresentBitmap(config, &bitmap);
-    return HTTPS_SUCCESS;
-  }
+  // Easter egg is now handled earlier in bl_init(), before WiFi.
+  // If we reach here, g_show_easter_egg is already false.
 
   bahnbrett::RenderStatus status;
   std::vector<bahnbrett::WidgetData> data;
@@ -160,6 +224,57 @@ https_request_err_e bahnbrett_local_render(void)
   status.wifi_state = bahnbrett::RenderStatus::WifiState::kConnected;
   status.wifi_rssi_dbm = WiFi.RSSI();
   Log_info("[bahnbrett] path=wifi-ok rssi=%d, fetching dashboard", status.wifi_rssi_dbm);
+
+  // Optional: fetch remote config JSON if a URL is configured.
+  {
+    Preferences prefs;
+    if (prefs.begin("bahnbrett", true)) {
+      String remote_url = prefs.getString("remote_url", "");
+      int remote_interval = prefs.getInt("remote_intv", 1);
+      int wakeup_count = prefs.getInt("remote_wakeup", 0);
+      prefs.end();
+
+      if (!remote_url.isEmpty() && remote_interval > 0) {
+        wakeup_count++;
+        bool should_fetch = (wakeup_count >= remote_interval);
+        Log_info("[bahnbrett] remote config: url=%s interval=%d count=%d fetch=%d",
+                 remote_url.c_str(), remote_interval, wakeup_count, should_fetch ? 1 : 0);
+
+        if (should_fetch) {
+          // Reset counter
+          {
+            Preferences p;
+            if (p.begin("bahnbrett", false)) {
+              p.putInt("remote_wakeup", 0);
+              p.end();
+            }
+          }
+
+          bahnbrett::ArduinoHttpClient http_client(true);
+          bahnbrett::HttpResponse resp = http_client.Get(remote_url.c_str());
+          if (resp.status == 200 && !resp.body.empty()) {
+            bahnbrett::JsonValue root;
+            if (bahnbrett::ParseJson(resp.body, &root)) {
+              bahnbrett::MergeJsonIntoConfig(&config, root);
+              Log_info("[bahnbrett] remote config applied: stations=%d grid=%dx%d",
+                       (int)config.station_names.size(), config.grid_cols, config.grid_rows);
+            } else {
+              Log_info("[bahnbrett] remote config: JSON parse failed");
+            }
+          } else {
+            Log_info("[bahnbrett] remote config: fetch failed (HTTP %d)", resp.status);
+          }
+        } else {
+          // Persist incremented counter
+          Preferences p;
+          if (p.begin("bahnbrett", false)) {
+            p.putInt("remote_wakeup", wakeup_count);
+            p.end();
+          }
+        }
+      }
+    }
+  }
 
   {
     bahnbrett::ArduinoHttpClient http_client(true);

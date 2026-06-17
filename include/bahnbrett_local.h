@@ -10,6 +10,8 @@ extern "C" {
 
 https_request_err_e bahnbrett_local_render(void);
 void bahnbrett_trigger_easter_egg(void);
+bool bahnbrett_render_easter_egg_now(void);
+void bahnbrett_render_config_screen(void);
 
 #ifdef __cplusplus
 }
