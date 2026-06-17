@@ -204,6 +204,57 @@ void bl_init(void)
 
   wakeup_reason = esp_sleep_get_wakeup_cause();
 
+#if defined(BOARD_XIAO_EPAPER_DISPLAY) || defined(BOARD_XIAO_EPAPER_DISPLAY_3CLR)
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT1)
+  {
+    uint64_t wake_status = esp_sleep_get_ext1_wakeup_status();
+    Log_info("GPIO wakeup detected (EXT1), status=0x%llx", wake_status);
+
+    // Wait for pressed button to be released and measure hold duration.
+    // If the button was a quick tap (already released), duration is ~0.
+    auto wait_for_release = [](int pin) -> unsigned long {
+      unsigned long start = millis();
+      while (digitalRead(pin) == LOW && (millis() - start) < BUTTON_SOFT_RESET_TIME) {
+        delay(10);
+      }
+      return millis() - start;
+    };
+
+    if (wake_status & (1ULL << PIN_KEY1)) {
+      Log_info("KEY1 pressed — easter egg");
+      wait_for_release(PIN_KEY1);
+#ifdef BAHNBRETT_LOCAL_RENDER
+      bahnbrett_trigger_easter_egg();
+#endif
+    }
+    else if (wake_status & (1ULL << PIN_KEY2)) {
+      Log_info("KEY2 pressed — config mode");
+      wait_for_release(PIN_KEY2);
+#ifdef BAHNBRETT_LOCAL_RENDER
+      g_bahnbrett_config_mode = true;
+#endif
+    }
+    else if (wake_status & (1ULL << PIN_KEY3)) {
+      unsigned long hold_duration = wait_for_release(PIN_KEY3);
+      Log_info("KEY3 hold duration=%lu ms", hold_duration);
+      if (hold_duration >= BUTTON_SOFT_RESET_TIME) {
+        Log_info("KEY3 extra-long press — factory reset");
+        resetDeviceCredentials();
+      } else if (hold_duration > BUTTON_HOLD_TIME) {
+        Log_info("KEY3 long press — WiFi reset");
+        WifiCaptivePortal.resetSettings();
+      }
+      // short press = default wake, no special action
+    }
+
+    Log_info("button handling end");
+  }
+  else
+  {
+    wait_for_serial();
+    Log_info("Non-GPIO wakeup (%d) -> didn't read buttons", wakeup_reason);
+  }
+#else
   if (wakeup_reason == ESP_SLEEP_WAKEUP_GPIO || wakeup_reason == ESP_SLEEP_WAKEUP_EXT0 || wakeup_reason == ESP_SLEEP_WAKEUP_EXT1)
   {
     Log_info("GPIO wakeup detected (%d)", wakeup_reason);
@@ -240,6 +291,7 @@ void bl_init(void)
     wait_for_serial();
     Log_info("Non-GPIO wakeup (%d) -> didn't read buttons", wakeup_reason);
   }
+#endif
 
   Log_info("preferences start");
   bool res = preferences.begin("data", false);
@@ -2040,7 +2092,13 @@ static void goToSleep(void)
 #elif CONFIG_IDF_TARGET_ESP32C3
   esp_deep_sleep_enable_gpio_wakeup(1 << PIN_INTERRUPT, ESP_GPIO_WAKEUP_GPIO_LOW);
 #elif CONFIG_IDF_TARGET_ESP32S3
+#if defined(BOARD_XIAO_EPAPER_DISPLAY) || defined(BOARD_XIAO_EPAPER_DISPLAY_3CLR)
+  esp_sleep_enable_ext1_wakeup(
+      (1ULL << PIN_KEY1) | (1ULL << PIN_KEY2) | (1ULL << PIN_KEY3),
+      ESP_EXT1_WAKEUP_ANY_LOW);
+#else
   esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_INTERRUPT, 0);
+#endif
 #else
 #error "Unsupported ESP32 target for GPIO wakeup configuration"
 #endif

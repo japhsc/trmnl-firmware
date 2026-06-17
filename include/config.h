@@ -102,7 +102,10 @@ enum WIFI_CONNECT_RETRY_TIME // Time to sleep before trying to connect to the Wi
 #define FAKE_BATTERY_VOLTAGE
 #elif (defined(BOARD_XIAO_EPAPER_DISPLAY) || defined(BOARD_XIAO_EPAPER_DISPLAY_3CLR))
 #define DEVICE_MODEL "xiao_epaper_display"
-#define PIN_INTERRUPT 5         //with silkscreen "KEY3"
+#define PIN_KEY1 2              //KEY1 — silkscreen label
+#define PIN_KEY2 3              //KEY2 — silkscreen label
+#define PIN_KEY3 5              //KEY3 — silkscreen label (primary wake/interrupt pin)
+#define PIN_INTERRUPT 5         //legacy alias for PIN_KEY3
 #define PIN_VBAT_SWITCH 6       //load switch enable pin for battery voltage measurement
 #define VBAT_SWITCH_LEVEL HIGH  //load switch enable pin active level
 #elif defined(BOARD_SEEED_RETERMINAL_E1001)
