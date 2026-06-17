@@ -10,10 +10,13 @@
 #include <esp_heap_caps.h>
 #include <trmnl_log.h>
 
+#include <qrcode.h>
+
 #include <bahnbrett/bahnbrett.h>
 #include <bahnbrett/bmp_builder.h>
 #include <bahnbrett/config.h>
 #include <bahnbrett/config_store.h>
+#include <bahnbrett/font_5x7.h>
 #include <bahnbrett/http_client.h>
 #include <bahnbrett/json.h>
 #include <bahnbrett/renderer.h>
@@ -137,6 +140,29 @@ bool bahnbrett_render_easter_egg_now(void) {
   return PresentBitmap(config, &bitmap);
 }
 
+namespace {
+
+// Draw a QR code onto the bitmap at (ox, oy) with each module scaled to
+// `scale`×`scale` pixels. Returns the total pixel height used (size * scale).
+int DrawQRCode(bahnbrett::Bitmap& bitmap, int ox, int oy, int scale,
+               const char* text, uint8_t fg) {
+  constexpr int kVersion = 2;
+  uint8_t buf[qrcode_getBufferSize(kVersion)];
+  QRCode qr;
+  qrcode_initText(&qr, buf, kVersion, ECC_LOW, text);
+
+  for (int y = 0; y < qr.size; y++) {
+    for (int x = 0; x < qr.size; x++) {
+      if (qrcode_getModule(&qr, x, y)) {
+        bitmap.FillRect(ox + x * scale, oy + y * scale, scale, scale, fg);
+      }
+    }
+  }
+  return qr.size * scale;
+}
+
+}  // namespace
+
 void bahnbrett_render_config_screen(void) {
   bahnbrett::DashboardConfig config = bahnbrett::DefaultDashboardConfig();
   config.width = static_cast<int>(display_width());
@@ -148,8 +174,6 @@ void bahnbrett_render_config_screen(void) {
   int w = bitmap.width();
   int h = bitmap.height();
 
-  // White background. Use 255 (kWhite) — in 1-bpp mode this fills all 8 pixels
-  // per byte as 1 (white). Using 1 would only set 1 of 8 pixels.
   constexpr uint8_t kWhite = 255;
   constexpr uint8_t kBlack = 0;
   bitmap.Clear(kWhite);
@@ -162,26 +186,50 @@ void bahnbrett_render_config_screen(void) {
   bitmap.DrawTextScaled(20, 12, "Bahnbrett", kWhite, 3);
   bitmap.DrawTextScaled(20, 34, "Configuration", kWhite, 2);
 
-  // Section: connection info.
+  // ── Left column: text instructions ──
   int y = bar_h + 30;
   int left = 30;
-  bitmap.DrawTextScaledF(left, y, "Connect to WiFi:", kBlack, 1.8f);
-  y += 40;
-  bitmap.DrawTextScaledF(left + 20, y, "Bahnbrett-Config", kBlack, 2.0f);
+  bitmap.DrawTextScaledF(left, y, "Connect to WiFi:", kBlack, 1.6f);
+  y += 35;
+  bitmap.DrawTextScaledF(left + 10, y, "Bahnbrett-Config", kBlack, 2.0f);
 
-  y += 50;
-  bitmap.DrawTextScaledF(left, y, "Open in browser:", kBlack, 1.8f);
-  y += 40;
-  bitmap.DrawTextScaledF(left + 20, y, "http://10.254.0.1", kBlack, 2.0f);
+  y += 45;
+  bitmap.DrawTextScaledF(left, y, "Open in browser:", kBlack, 1.6f);
+  y += 35;
+  bitmap.DrawTextScaledF(left + 10, y, "http://10.254.0.1", kBlack, 1.8f);
 
-  y += 60;
-  bitmap.DrawTextScaledF(left, y, "Timeout: 5 minutes", kBlack, 1.5f);
+  y += 55;
+  bitmap.DrawTextScaledF(left, y, "Timeout: 5 minutes", kBlack, 1.4f);
+
+  // ── Right column: QR codes ──
+  constexpr int kQrScale = 4;
+  int qr_right = w - 40;  // right edge of QR codes
+
+  auto drawQrLabel = [&](int qx, int qy_below, int qr_w, const std::string& label) {
+    int tw = static_cast<int>(label.size() * (bahnbrett::kFont5x7Width + 1) * 1.4f);
+    bitmap.DrawTextScaledF(qx + (qr_w - tw) / 2, qy_below, label, kBlack, 1.4f);
+  };
+
+  // WiFi QR code
+  int qr_w = 25 * kQrScale;  // 100 px for version 2
+  int wifi_qr_x = qr_right - qr_w;
+  int wifi_qr_y = bar_h + 30;
+  int wifi_h = DrawQRCode(bitmap, wifi_qr_x, wifi_qr_y, kQrScale,
+                          "WIFI:T:nopass;S:Bahnbrett-Config;P:;;", kBlack);
+  drawQrLabel(wifi_qr_x, wifi_qr_y + wifi_h + 6, qr_w, "WiFi");
+
+  // URL QR code
+  int url_qr_y = wifi_qr_y + wifi_h + 50;
+  int url_h = DrawQRCode(bitmap, wifi_qr_x, url_qr_y, kQrScale,
+                         "http://10.254.0.1/", kBlack);
+  drawQrLabel(wifi_qr_x, url_qr_y + url_h + 6, qr_w, "Config page");
+
+  // Thin vertical separator between text and QR columns.
+  bitmap.FillRect(qr_right + 10, bar_h + 20, 2, h - bar_h - 80, kBlack);
 
   // Footer hint.
   int footer_y = h - 40;
   bitmap.DrawTextScaledF(left, footer_y, "Triple-click the button to enter this mode", kBlack, 1.2f);
-
-  // Thin separator line above footer.
   bitmap.FillRect(0, footer_y - 15, w, 2, kBlack);
 
   PresentBitmap(config, &bitmap);
