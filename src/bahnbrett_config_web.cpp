@@ -141,6 +141,10 @@ static const char kConfigPageHtml[] PROGMEM = R"=====(
 <textarea id="direction_filters" rows="2"></textarea>
 
 <h2>Fetch</h2>
+<label for="api_base_url">Departures API base URL</label>
+<input type="text" id="api_base_url" placeholder="https://v6.vbb.transport.rest">
+<div class="hint">Point this at a self-hosted vbb-rest instance. Empty = public VBB API.</div>
+
 <label for="max_departures_to_fetch_per_widget">Max departures to fetch per widget</label>
 <input type="number" id="max_departures_to_fetch_per_widget" min="5" max="200">
 
@@ -195,6 +199,7 @@ function populate() {
   setLines('route_filters', cfg.route_filters);
   setLines('direction_filters', cfg.direction_filters);
   setVal('max_departures_to_fetch_per_widget', cfg.max_departures_to_fetch_per_widget);
+  setVal('api_base_url', cfg.api_base_url);
   setVal('remote_config_url', cfg.remote_config_url);
   setVal('remote_config_interval', cfg.remote_config_interval);
 
@@ -256,6 +261,7 @@ function getFormData() {
     route_filters: getLines('route_filters'),
     direction_filters: getLines('direction_filters'),
     max_departures_to_fetch_per_widget: parseInt(document.getElementById('max_departures_to_fetch_per_widget').value) || 50,
+    api_base_url: document.getElementById('api_base_url').value.trim() || 'https://v6.vbb.transport.rest',
     remote_config_url: document.getElementById('remote_config_url').value.trim(),
     remote_config_interval: parseInt(document.getElementById('remote_config_interval').value) || 1
   };
@@ -343,6 +349,7 @@ std::string CurrentConfigJson() {
   jb.KeyNumber("max_departure_minutes", cfg.max_departure_minutes);
   jb.KeyString("home_city", cfg.home_city);
   jb.KeyBool("show_delays", cfg.show_delays);
+  jb.KeyString("api_base_url", cfg.api_base_url);
   jb.KeyNumber("grid_cols", cfg.grid_cols);
   jb.KeyNumber("grid_rows", cfg.grid_rows);
 
@@ -445,6 +452,10 @@ bool SaveConfigFromJson(const std::string& json_str) {
   config.route_filters = getStrVec("route_filters");
   config.direction_filters = getStrVec("direction_filters");
   config.max_departures_to_fetch_per_widget = getInt("max_departures_to_fetch_per_widget", 50);
+  config.api_base_url = getString("api_base_url", bahnbrett::kDefaultApiBaseUrl);
+  if (config.api_base_url.empty()) {
+    config.api_base_url = bahnbrett::kDefaultApiBaseUrl;
+  }
 
   // Use the free function to persist.
   if (!bahnbrett::SaveConfigToNvs(config)) {

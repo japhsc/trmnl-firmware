@@ -260,6 +260,8 @@ https_request_err_e bahnbrett_local_render(void)
   config.bitmap_header_pad = bahnbrett::kBmpHeaderSize;
   Log_info("[bahnbrett] config: w=%d h=%d format=mono1 header_pad=%d",
            config.width, config.height, config.bitmap_header_pad);
+  Log_info("[bahnbrett] config: api=%s refresh_seconds=%d",
+           bahnbrett::EffectiveApiBaseUrl(config).c_str(), config.refresh_seconds);
 
   // Easter egg is now handled earlier in bl_init(), before WiFi.
   // If we reach here, g_show_easter_egg is already false.
@@ -333,8 +335,8 @@ https_request_err_e bahnbrett_local_render(void)
 
   {
     bahnbrett::ArduinoHttpClient http_client(true);
-    bahnbrett::TransportRestProvider provider("https://v6.vbb.transport.rest",
-                                              http_client);
+    bahnbrett::TransportRestProvider provider(
+        bahnbrett::EffectiveApiBaseUrl(config), http_client);
     data = provider.GetDashboard(config);
   }
 
