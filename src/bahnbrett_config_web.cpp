@@ -16,6 +16,7 @@
 #include <bahnbrett/json.h>
 #include <bahnbrett/types.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -141,11 +142,44 @@ static const char kConfigPageHtml[] PROGMEM = R"=====(
 <label for="direction_filters">Direction filters (one per line, empty = all)</label>
 <textarea id="direction_filters" rows="2"></textarea>
 
-<h2>Fetch</h2>
-<label for="api_base_url">Departures API base URL</label>
-<input type="text" id="api_base_url" placeholder="https://v6.vbb.transport.rest">
-<div class="hint">Point this at a self-hosted vbb-rest instance. Empty = public VBB API.</div>
+<label for="mode_filters">Mode filters (one per line, empty = all)</label>
+<textarea id="mode_filters" rows="2"></textarea>
+<div class="hint">Transit modes, e.g. "SUBURBAN", "SUBWAY", "BUS", "REGIONAL_RAIL"</div>
 
+<h2>Data Source</h2>
+<label for="provider">Departures provider</label>
+<select id="provider">
+  <option value="transitous">Transitous (Berlin, Hamburg, all of Germany)</option>
+  <option value="vbb">VBB (Berlin and Brandenburg)</option>
+  <option value="hvv">HVV Geofox (Hamburg, needs credentials)</option>
+</select>
+<div class="hint">Transitous is the default. The device re-resolves all station names when the provider changes.</div>
+
+<label for="transitous_base_url">Transitous API base URL</label>
+<input type="text" id="transitous_base_url" placeholder="https://api.transitous.org/api/">
+<div class="hint">Applies when the provider is Transitous. Empty = public Transitous API.</div>
+
+<label for="api_base_url">VBB API base URL</label>
+<input type="text" id="api_base_url" placeholder="https://v6.vbb.transport.rest">
+<div class="hint">Applies when the provider is VBB. Point this at a self-hosted vbb-rest instance. Empty = public VBB API.</div>
+
+<label for="hvv_user">HVV Geofox user</label>
+<input type="text" id="hvv_user" autocomplete="off">
+<div class="hint">Applies when the provider is HVV. Request access at hvv.de (e-mail to api@hochbahn.de).</div>
+
+<label for="hvv_key">HVV Geofox key</label>
+<input type="password" id="hvv_key" autocomplete="off">
+<div class="hint">The HMAC secret that HVV assigns to the user. The HVV provider needs both fields.</div>
+
+<label for="hvv_base_url">HVV Geofox base URL</label>
+<input type="text" id="hvv_base_url" placeholder="https://gti.geofox.de/gti/public">
+<div class="hint">Applies when the provider is HVV. Empty = public GTI service.</div>
+
+<label for="min_poll_seconds">Minimum poll interval (seconds)</label>
+<input type="number" id="min_poll_seconds" min="30" max="3600">
+<div class="hint">Shortest spacing between two departures requests for the same stop. The floor is 30 seconds.</div>
+
+<h2>Fetch</h2>
 <label for="max_departures_to_fetch_per_widget">Max departures to fetch per widget</label>
 <input type="number" id="max_departures_to_fetch_per_widget" min="5" max="200">
 
@@ -163,6 +197,13 @@ static const char kConfigPageHtml[] PROGMEM = R"=====(
   <button type="button" class="btn-save" onclick="saveConfig()">Save &amp; Reboot</button>
 </div>
 </form>
+
+<p class="hint">
+  Departure data: <a href="https://transitous.org/sources/" target="_blank">Transitous</a>
+  (community service, non-commercial and open-source use only) or
+  <a href="https://vbb.transport.rest/" target="_blank">VBB</a>.
+  HVV data requires registration with HVV.
+</p>
 
 <script>
 var cfg = CONFIG_JSON_PLACEHOLDER;
@@ -199,8 +240,15 @@ function populate() {
   setLines('line_filters', cfg.line_filters);
   setLines('route_filters', cfg.route_filters);
   setLines('direction_filters', cfg.direction_filters);
-  setVal('max_departures_to_fetch_per_widget', cfg.max_departures_to_fetch_per_widget);
+  setLines('mode_filters', cfg.mode_filters);
+  setVal('provider', cfg.provider || 'transitous');
+  setVal('transitous_base_url', cfg.transitous_base_url);
   setVal('api_base_url', cfg.api_base_url);
+  setVal('hvv_user', cfg.hvv_user);
+  setVal('hvv_key', cfg.hvv_key);
+  setVal('hvv_base_url', cfg.hvv_base_url);
+  setVal('min_poll_seconds', cfg.min_poll_seconds);
+  setVal('max_departures_to_fetch_per_widget', cfg.max_departures_to_fetch_per_widget);
   setVal('remote_config_url', cfg.remote_config_url);
   setVal('remote_config_interval', cfg.remote_config_interval);
 
@@ -261,8 +309,15 @@ function getFormData() {
     line_filters: getLines('line_filters'),
     route_filters: getLines('route_filters'),
     direction_filters: getLines('direction_filters'),
-    max_departures_to_fetch_per_widget: parseInt(document.getElementById('max_departures_to_fetch_per_widget').value) || 50,
+    mode_filters: getLines('mode_filters'),
+    provider: document.getElementById('provider').value,
+    transitous_base_url: document.getElementById('transitous_base_url').value.trim(),
     api_base_url: document.getElementById('api_base_url').value.trim() || 'https://v6.vbb.transport.rest',
+    hvv_user: document.getElementById('hvv_user').value.trim(),
+    hvv_key: document.getElementById('hvv_key').value.trim(),
+    hvv_base_url: document.getElementById('hvv_base_url').value.trim(),
+    min_poll_seconds: parseInt(document.getElementById('min_poll_seconds').value) || 60,
+    max_departures_to_fetch_per_widget: parseInt(document.getElementById('max_departures_to_fetch_per_widget').value) || 50,
     remote_config_url: document.getElementById('remote_config_url').value.trim(),
     remote_config_interval: parseInt(document.getElementById('remote_config_interval').value) || 1
   };
@@ -337,13 +392,21 @@ std::string CurrentConfigJson() {
   jb.KeyNumber("max_departures_to_fetch_per_widget", cfg.max_departures_to_fetch_per_widget);
   jb.KeyNumber("countdown_minutes", cfg.countdown_minutes);
   jb.KeyNumber("refresh_seconds", cfg.refresh_seconds);
+  jb.KeyNumber("min_poll_seconds", cfg.min_poll_seconds);
   jb.KeyNumberD("header_font_scale", cfg.header_font_scale);
   jb.KeyNumberD("widget_font_scale", cfg.widget_font_scale);
   jb.KeyString("timezone", cfg.timezone);
+  jb.KeyString("provider", cfg.provider);
+  jb.KeyString("api_base_url", cfg.api_base_url);
+  jb.KeyString("transitous_base_url", cfg.transitous_base_url);
+  jb.KeyString("hvv_base_url", cfg.hvv_base_url);
+  jb.KeyString("hvv_user", cfg.hvv_user);
+  jb.KeyString("hvv_key", cfg.hvv_key);
   WriteStrVec("station_names", cfg.station_names);
   WriteStrVec("line_filters", cfg.line_filters);
   WriteStrVec("route_filters", cfg.route_filters);
   WriteStrVec("direction_filters", cfg.direction_filters);
+  WriteStrVec("mode_filters", cfg.mode_filters);
   jb.KeyBool("aggregate_by_destination", cfg.aggregate_by_destination);
   jb.KeyNumber("max_departures_per_group", cfg.max_departures_per_group);
   jb.KeyNumber("min_departure_minutes", cfg.min_departure_minutes);
@@ -444,6 +507,7 @@ bool SaveConfigFromJson(const std::string& json_str) {
   config.min_departure_minutes = getInt("min_departure_minutes", 0);
   config.max_departure_minutes = getInt("max_departure_minutes", 180);
   config.refresh_seconds = getInt("refresh_seconds", 900);
+  config.min_poll_seconds = std::max(30, getInt("min_poll_seconds", 60));
   config.header_font_scale = getFloat("header_font_scale", 1.0f);
   config.widget_font_scale = getFloat("widget_font_scale", 1.0f);
   config.show_delays = getBool("show_delays", true);
@@ -452,11 +516,20 @@ bool SaveConfigFromJson(const std::string& json_str) {
   config.line_filters = getStrVec("line_filters");
   config.route_filters = getStrVec("route_filters");
   config.direction_filters = getStrVec("direction_filters");
+  config.mode_filters = getStrVec("mode_filters");
+  // An unknown provider name selects the default provider; see
+  // ParseProviderKind() in config.h.
+  config.provider = bahnbrett::ProviderKindName(
+      bahnbrett::ParseProviderKind(getString("provider", "transitous")));
   config.max_departures_to_fetch_per_widget = getInt("max_departures_to_fetch_per_widget", 50);
   config.api_base_url = getString("api_base_url", bahnbrett::kDefaultApiBaseUrl);
   if (config.api_base_url.empty()) {
     config.api_base_url = bahnbrett::kDefaultApiBaseUrl;
   }
+  config.transitous_base_url = getString("transitous_base_url", "");
+  config.hvv_base_url = getString("hvv_base_url", "");
+  config.hvv_user = getString("hvv_user", "");
+  config.hvv_key = getString("hvv_key", "");
 
   // Use the free function to persist.
   if (!bahnbrett::SaveConfigToNvs(config)) {
