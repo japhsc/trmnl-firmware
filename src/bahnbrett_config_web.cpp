@@ -105,7 +105,8 @@ static const char kConfigPageHtml[] PROGMEM = R"=====(
 <input type="number" id="max_departure_minutes" min="5" max="1440">
 
 <label for="refresh_seconds">Refresh interval (seconds)</label>
-<input type="number" id="refresh_seconds" min="10" max="3600">
+<input type="number" id="refresh_seconds" min="30" max="86400">
+<div class="hint">Sleep time between two renders. Short intervals drain the battery faster. Default: 900</div>
 
 <h2>Appearance</h2>
 <label for="header_font_scale">Header font scale</label>
@@ -251,7 +252,7 @@ function getFormData() {
     countdown_minutes: parseInt(document.getElementById('countdown_minutes').value) || 15,
     min_departure_minutes: parseInt(document.getElementById('min_departure_minutes').value) || 0,
     max_departure_minutes: parseInt(document.getElementById('max_departure_minutes').value) || 180,
-    refresh_seconds: parseInt(document.getElementById('refresh_seconds').value) || 10,
+    refresh_seconds: parseInt(document.getElementById('refresh_seconds').value) || 900,
     header_font_scale: parseFloat(document.getElementById('header_font_scale').value) || 1.0,
     widget_font_scale: parseFloat(document.getElementById('widget_font_scale').value) || 1.0,
     show_delays: document.getElementById('show_delays').checked,
@@ -442,7 +443,7 @@ bool SaveConfigFromJson(const std::string& json_str) {
   config.countdown_minutes = getInt("countdown_minutes", 15);
   config.min_departure_minutes = getInt("min_departure_minutes", 0);
   config.max_departure_minutes = getInt("max_departure_minutes", 180);
-  config.refresh_seconds = getInt("refresh_seconds", 10);
+  config.refresh_seconds = getInt("refresh_seconds", 900);
   config.header_font_scale = getFloat("header_font_scale", 1.0f);
   config.widget_font_scale = getFloat("widget_font_scale", 1.0f);
   config.show_delays = getBool("show_delays", true);

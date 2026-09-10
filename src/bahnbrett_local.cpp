@@ -26,6 +26,8 @@
 
 #include <Preferences.h>
 
+#include <config.h>
+
 #include <vector>
 
 extern ApiDisplayResult apiDisplayResult;
@@ -242,6 +244,34 @@ void bahnbrett_render_config_screen(void) {
   PresentBitmap(config, &bitmap);
 }
 
+namespace {
+
+// Writes the configured refresh interval to the sleep-timer key that
+// bl.cpp reads before deep sleep. Values below 30 seconds come from the
+// old 10-second default and mean "not configured"; the device then keeps
+// the 15-minute default so the panel and the battery stay healthy.
+void ApplyRefreshInterval(const bahnbrett::DashboardConfig& config) {
+  constexpr int kMinRefreshSeconds = 30;
+  constexpr int kMaxRefreshSeconds = 24 * 60 * 60;
+  constexpr int kDefaultRefreshSeconds = 900;
+  int refresh = config.refresh_seconds;
+  if (refresh < kMinRefreshSeconds) {
+    refresh = kDefaultRefreshSeconds;
+  }
+  if (refresh > kMaxRefreshSeconds) {
+    refresh = kMaxRefreshSeconds;
+  }
+  Preferences prefs;
+  if (prefs.begin("data", false)) {
+    prefs.putUInt(PREFERENCES_SLEEP_TIME_KEY, static_cast<uint32_t>(refresh));
+    prefs.end();
+  }
+  Log_info("[bahnbrett] The device applies a refresh interval of %d seconds.",
+           refresh);
+}
+
+}  // namespace
+
 https_request_err_e bahnbrett_local_render(void)
 {
   Log_info("[bahnbrett] bahnbrett_local_render entry");
@@ -262,6 +292,10 @@ https_request_err_e bahnbrett_local_render(void)
            config.width, config.height, config.bitmap_header_pad);
   Log_info("[bahnbrett] config: api=%s refresh_seconds=%d",
            bahnbrett::EffectiveApiBaseUrl(config).c_str(), config.refresh_seconds);
+
+  // Write the configured refresh interval to the sleep timer so bl.cpp
+  // applies it when the device enters deep sleep.
+  ApplyRefreshInterval(config);
 
   // Easter egg is now handled earlier in bl_init(), before WiFi.
   // If we reach here, g_show_easter_egg is already false.
