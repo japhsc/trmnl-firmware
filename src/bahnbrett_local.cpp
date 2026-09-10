@@ -105,13 +105,19 @@ bool PresentBitmap(const bahnbrett::DashboardConfig& config,
 
 bool RenderAndPresent(const bahnbrett::DashboardConfig& config,
                       std::vector<bahnbrett::WidgetData>* data,
-                      const bahnbrett::RenderStatus& status) {
+                      const bahnbrett::RenderStatus& status,
+                      bahnbrett::EpochSeconds server_epoch) {
   Log_info("[bahnbrett] RenderAndPresent: widgets=%u error='%s' wifi=%d",
            (unsigned)data->size(), status.error_message.c_str(),
            static_cast<int>(status.wifi_state));
   bahnbrett_log_heap("pre-render");
 
-  bahnbrett::EpochSeconds now_epoch = bahnbrett::NowEpochSeconds();
+  // Prefer the API's Date header over the local clock: on the device the
+  // system clock drifts freely across deep-sleep cycles between NTP syncs
+  // (see ADR 0037).
+  bahnbrett::EpochSeconds now_epoch = server_epoch > 0
+                                          ? server_epoch
+                                          : bahnbrett::NowEpochSeconds();
   bahnbrett::Bitmap bitmap = MakeStaticBitmap(config);
   bahnbrett::RenderDashboardInto(bitmap, config, *data, now_epoch, status);
   Log_info("[bahnbrett] RenderDashboardInto done: bitmap w=%d h=%d stride=%d header_pad=%d size=%u owns=%d",
@@ -418,13 +424,14 @@ https_request_err_e bahnbrett_local_render(void)
 
   bahnbrett::RenderStatus status;
   std::vector<bahnbrett::WidgetData> data;
+  bahnbrett::EpochSeconds server_epoch = 0;
 
   if (WiFi.status() != WL_CONNECTED) {
     Log_info("[bahnbrett] path=wifi-down");
     status.wifi_state = bahnbrett::RenderStatus::WifiState::kNotConnected;
     status.wifi_rssi_dbm = -100;
     status.error_message = "WiFi unavailable";
-    RenderAndPresent(config, &data, status);
+    RenderAndPresent(config, &data, status, server_epoch);
     return HTTPS_UNABLE_TO_CONNECT;
   }
 
@@ -508,6 +515,10 @@ https_request_err_e bahnbrett_local_render(void)
     bahnbrett::DashboardFetcher fetcher(*selection.provider,
                                         config.min_poll_seconds);
     data = fetcher.Fetch(config, &station_cache);
+    // The fetch responses carry the freshest server clock in their Date
+    // headers. Read it before the block ends because the client frees its
+    // TLS session here; see ADR 0037.
+    server_epoch = http_client.server_epoch();
     report = selection.provider->fetch_report();
   }
 
@@ -567,11 +578,11 @@ https_request_err_e bahnbrett_local_render(void)
     status.error_message = bahnbrett::DescribeFetchFailure(report);
     Log_info("[bahnbrett] The device shows the failure message: %s",
              status.error_message.c_str());
-    RenderAndPresent(config, &data, status);
+    RenderAndPresent(config, &data, status, server_epoch);
     return HTTPS_REQUEST_FAILED;
   }
 
-  if (!RenderAndPresent(config, &data, status)) {
+  if (!RenderAndPresent(config, &data, status, server_epoch)) {
     Log_info("[bahnbrett] RenderAndPresent reported failure");
     return HTTPS_REQUEST_FAILED;
   }

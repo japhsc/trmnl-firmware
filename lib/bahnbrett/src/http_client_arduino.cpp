@@ -1,8 +1,14 @@
 #include "bahnbrett/http_client.h"
+#include "bahnbrett/time_utils.h"
 
 #if defined(ARDUINO)
 
+// The direct includes let the PlatformIO dependency finder link the
+// framework libraries to this library. The real http_client.h lives
+// outside this tree, so the finder cannot follow it.
+#include <HTTPClient.h>
 #include <Stream.h>
+#include <WiFiClientSecure.h>
 
 #include <algorithm>
 
@@ -59,6 +65,23 @@ class StringSink : public Stream {
   size_t cap_;
   bool overflow_ = false;
 };
+
+// Reads the collected `Date` response header into HttpResponse::date_epoch.
+// The render clock comes from this header because the device RTC drifts
+// across deep-sleep cycles; see ADR 0037.
+void ApplyDateHeader(HTTPClient* http, HttpResponse* response) {
+  if (!http->hasHeader("Date")) {
+    return;
+  }
+  String date_header = http->header("Date");
+  if (date_header.length() == 0) {
+    return;
+  }
+  EpochSeconds date_epoch = 0;
+  if (ParseHttpDate(std::string(date_header.c_str()), &date_epoch)) {
+    response->date_epoch = date_epoch;
+  }
+}
 
 // Reads the response body into `response` through the shared sink. The
 // function clears the body and zeroes the status when the body exceeds the
@@ -117,12 +140,17 @@ HttpResponse ArduinoHttpClient::Get(const std::string& url) {
     return response;
   }
 
+  static const char* kCollectedHeaders[] = {"Date"};
+  http_.collectHeaders(kCollectedHeaders, 1);
+
   BAHNBRETT_HTTP_LOG("GET start");
   int code = http_.GET();
   response.status = code;
   BAHNBRETT_HTTP_LOG("GET done code=%d size=%d", code, http_.getSize());
 
   if (code > 0) {
+    ApplyDateHeader(&http_, &response);
+    NoteServerEpoch(response.date_epoch);
     ReadBody(http_, &response);
   }
 
@@ -148,12 +176,17 @@ HttpResponse ArduinoHttpClient::Post(const std::string& url,
     http_.addHeader(header.first.c_str(), header.second.c_str());
   }
 
+  static const char* kCollectedHeaders[] = {"Date"};
+  http_.collectHeaders(kCollectedHeaders, 1);
+
   BAHNBRETT_HTTP_LOG("POST start body=%u", (unsigned)body.size());
   int code = http_.POST(body.c_str());
   response.status = code;
   BAHNBRETT_HTTP_LOG("POST done code=%d size=%d", code, http_.getSize());
 
   if (code > 0) {
+    ApplyDateHeader(&http_, &response);
+    NoteServerEpoch(response.date_epoch);
     ReadBody(http_, &response);
   }
 
