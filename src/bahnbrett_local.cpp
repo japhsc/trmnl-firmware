@@ -333,13 +333,19 @@ https_request_err_e bahnbrett_local_render(void)
     }
   }
 
+  bahnbrett::FetchReport report;
   {
     bahnbrett::ArduinoHttpClient http_client(true);
     bahnbrett::TransportRestProvider provider(
         bahnbrett::EffectiveApiBaseUrl(config), http_client);
     data = provider.GetDashboard(config);
+    report = provider.fetch_report();
   }
 
+  Log_info("[bahnbrett] The provider made %d station lookups with %d failures and %d departure lookups with %d failures. The last failure kind is %d with status %d.",
+           report.station_lookups, report.station_lookup_failures,
+           report.departure_lookups, report.departure_lookup_failures,
+           static_cast<int>(report.last_failure_kind), report.last_failure_status);
   Log_info("[bahnbrett] GetDashboard returned widgets=%u", (unsigned)data.size());
   for (size_t i = 0; i < data.size(); ++i) {
     Log_info("[bahnbrett]   widget[%u]: station_id='%s' name='%s' departures=%u",
@@ -368,8 +374,16 @@ https_request_err_e bahnbrett_local_render(void)
   }
   Log_info("[bahnbrett] has_station=%d", has_station ? 1 : 0);
 
-  if (!has_station) {
-    status.error_message = "Departures unavailable";
+  // All departure fetches failed, although the stations resolved. The grid
+  // would render empty, so show the failure screen with the cause instead.
+  bool all_departures_failed =
+      report.departure_lookups > 0 &&
+      report.departure_lookup_failures == report.departure_lookups;
+
+  if (!has_station || all_departures_failed) {
+    status.error_message = bahnbrett::DescribeFetchFailure(report);
+    Log_info("[bahnbrett] The device shows the failure message: %s",
+             status.error_message.c_str());
     RenderAndPresent(config, &data, status);
     return HTTPS_REQUEST_FAILED;
   }
