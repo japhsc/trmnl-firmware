@@ -28,6 +28,7 @@
 
 #include <config.h>
 
+#include <unordered_map>
 #include <vector>
 
 extern ApiDisplayResult apiDisplayResult;
@@ -246,6 +247,99 @@ void bahnbrett_render_config_screen(void) {
 
 namespace {
 
+// A cached station entry stays valid for seven days. After that the device
+// resolves the configured names again so it follows API-side changes.
+constexpr int32_t kStationCacheMaxAgeSeconds = 7 * 24 * 60 * 60;
+
+std::string JsonStringOf(const bahnbrett::JsonValue& object, const char* key) {
+  const bahnbrett::JsonValue* value = object.Find(key);
+  if (!value || value->type != bahnbrett::JsonValue::Type::kString) {
+    return {};
+  }
+  return value->string_value;
+}
+
+// Loads the persisted station cache from NVS. The function returns an empty
+// map when NVS holds no cache or the cache is older than the max age.
+std::unordered_map<std::string, bahnbrett::Station> LoadStationCache() {
+  std::unordered_map<std::string, bahnbrett::Station> cache;
+  Preferences prefs;
+  if (!prefs.begin("bahnbrett", true)) {
+    return cache;
+  }
+  int32_t saved_at = prefs.getInt("station_ts", 0);
+  String raw = prefs.getString("station_map", "");
+  prefs.end();
+
+  bahnbrett::EpochSeconds now = bahnbrett::NowEpochSeconds();
+  if (saved_at <= 0 || now <= 0 ||
+      now - saved_at > kStationCacheMaxAgeSeconds) {
+    return cache;
+  }
+
+  bahnbrett::JsonValue root;
+  if (!bahnbrett::ParseJson(std::string(raw.c_str()), &root) ||
+      root.type != bahnbrett::JsonValue::Type::kObject) {
+    return cache;
+  }
+  for (const auto& entry : root.object) {
+    if (entry.second.type != bahnbrett::JsonValue::Type::kObject) {
+      continue;
+    }
+    bahnbrett::Station station;
+    station.id = JsonStringOf(entry.second, "id");
+    station.name = JsonStringOf(entry.second, "name");
+    station.parent_station = JsonStringOf(entry.second, "parent");
+    if (station.id.empty()) {
+      continue;
+    }
+    cache[entry.first] = std::move(station);
+  }
+  return cache;
+}
+
+// Persists the station cache to NVS. Entries without an id are skipped so
+// that a failed lookup cannot overwrite a good entry from an earlier run.
+void SaveStationCache(const std::unordered_map<std::string, bahnbrett::Station>& cache) {
+  if (cache.empty()) {
+    return;
+  }
+  bahnbrett::JsonBuilder jb;
+  jb.StartObject();
+  size_t written = 0;
+  for (const auto& entry : cache) {
+    if (entry.second.id.empty()) {
+      continue;
+    }
+    jb.Key(entry.first);
+    jb.StartObject();
+    jb.KeyString("id", entry.second.id);
+    jb.KeyString("name", entry.second.name);
+    jb.KeyString("parent", entry.second.parent_station);
+    jb.EndObject();
+    jb.Comma();
+    written++;
+  }
+  jb.EndObject();
+  if (written == 0) {
+    return;
+  }
+
+  bahnbrett::EpochSeconds now = bahnbrett::NowEpochSeconds();
+  if (now <= 0) {
+    // The clock is not synchronised. Do not store a bogus timestamp.
+    return;
+  }
+  Preferences prefs;
+  if (prefs.begin("bahnbrett", false)) {
+    prefs.putString("station_map", jb.str().c_str());
+    prefs.putInt("station_ts", static_cast<int32_t>(now));
+    prefs.end();
+    Log_info("[bahnbrett] The device stored %u resolved stations in NVS.",
+             (unsigned)written);
+  }
+}
+
 // Writes the configured refresh interval to the sleep-timer key that
 // bl.cpp reads before deep sleep. Values below 30 seconds come from the
 // old 10-second default and mean "not configured"; the device then keeps
@@ -367,13 +461,41 @@ https_request_err_e bahnbrett_local_render(void)
     }
   }
 
+  // Prime the provider with stations that earlier wakeups resolved. The
+  // device then skips one /stations request per configured name and pays
+  // for the departures request only.
+  std::unordered_map<std::string, bahnbrett::Station> station_cache =
+      LoadStationCache();
+
   bahnbrett::FetchReport report;
   {
     bahnbrett::ArduinoHttpClient http_client(true);
     bahnbrett::TransportRestProvider provider(
         bahnbrett::EffectiveApiBaseUrl(config), http_client);
+    provider.PrimeStationCache(station_cache);
     data = provider.GetDashboard(config);
     report = provider.fetch_report();
+
+    // Keep the stations that this run resolved. A failed lookup yields an
+    // empty id, so it cannot poison the persisted cache.
+    for (const auto& entry : provider.station_cache()) {
+      if (!entry.second.id.empty()) {
+        station_cache[entry.first] = entry.second;
+      }
+    }
+  }
+
+  if (report.station_lookups > 0) {
+    // Keep only the stations that the config lists. This prunes entries for
+    // stations that the user removed.
+    std::unordered_map<std::string, bahnbrett::Station> current;
+    for (const auto& name : config.station_names) {
+      auto entry = station_cache.find(name);
+      if (entry != station_cache.end()) {
+        current[name] = entry->second;
+      }
+    }
+    SaveStationCache(current);
   }
 
   Log_info("[bahnbrett] The provider made %d station lookups with %d failures and %d departure lookups with %d failures. The last failure kind is %d with status %d.",
@@ -408,8 +530,9 @@ https_request_err_e bahnbrett_local_render(void)
   }
   Log_info("[bahnbrett] has_station=%d", has_station ? 1 : 0);
 
-  // All departure fetches failed, although the stations resolved. The grid
-  // would render empty, so show the failure screen with the cause instead.
+  // All departure fetches failed while the station cache supplied the
+  // station data. The grid would render empty, so show the failure screen
+  // with the cause instead.
   bool all_departures_failed =
       report.departure_lookups > 0 &&
       report.departure_lookup_failures == report.departure_lookups;
