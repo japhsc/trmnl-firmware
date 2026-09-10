@@ -19,9 +19,10 @@
 #include <bahnbrett/font_5x7.h>
 #include <bahnbrett/http_client.h>
 #include <bahnbrett/json.h>
+#include <bahnbrett/provider.h>
+#include <bahnbrett/provider_factory.h>
 #include <bahnbrett/renderer.h>
 #include <bahnbrett/time_utils.h>
-#include <bahnbrett/transport_rest_provider.h>
 #include <bahnbrett/trmnl_bmp_backend.h>
 
 #include <Preferences.h>
@@ -242,6 +243,13 @@ void bahnbrett_render_config_screen(void) {
   bitmap.DrawTextScaledF(left, footer_y, "Triple-click the button to enter this mode", kBlack, 1.2f);
   bitmap.FillRect(0, footer_y - 15, w, 2, kBlack);
 
+  // Attribution of the configured data source. Transitous requires a
+  // visible link to its sources page; see ADR 0034.
+  const bahnbrett::DashboardConfig stored = bahnbrett::LoadEffectiveConfig();
+  const std::string attribution = bahnbrett::ProviderAttribution(
+      bahnbrett::ParseProviderKind(stored.provider));
+  bitmap.DrawTextScaledF(left, h - 16, attribution, kBlack, 1.0f);
+
   PresentBitmap(config, &bitmap);
 }
 
@@ -260,8 +268,11 @@ std::string JsonStringOf(const bahnbrett::JsonValue& object, const char* key) {
 }
 
 // Loads the persisted station cache from NVS. The function returns an empty
-// map when NVS holds no cache or the cache is older than the max age.
-std::unordered_map<std::string, bahnbrett::Station> LoadStationCache() {
+// map when NVS holds no cache, the cache is older than the max age, or the
+// cache belongs to a different provider. Stop ids differ across providers,
+// so a provider switch invalidates the cache; see ADR 0034.
+std::unordered_map<std::string, bahnbrett::Station> LoadStationCache(
+    const std::string& provider_name) {
   std::unordered_map<std::string, bahnbrett::Station> cache;
   Preferences prefs;
   if (!prefs.begin("bahnbrett", true)) {
@@ -269,7 +280,14 @@ std::unordered_map<std::string, bahnbrett::Station> LoadStationCache() {
   }
   int32_t saved_at = prefs.getInt("station_ts", 0);
   String raw = prefs.getString("station_map", "");
+  String cached_provider = prefs.getString("station_prov", "");
   prefs.end();
+
+  if (cached_provider.length() > 0 && cached_provider != provider_name.c_str()) {
+    Log_info("[bahnbrett] The provider changed from %s to %s. The device drops the station cache.",
+             cached_provider.c_str(), provider_name.c_str());
+    return cache;
+  }
 
   bahnbrett::EpochSeconds now = bahnbrett::NowEpochSeconds();
   if (saved_at <= 0 || now <= 0 ||
@@ -300,7 +318,10 @@ std::unordered_map<std::string, bahnbrett::Station> LoadStationCache() {
 
 // Persists the station cache to NVS. Entries without an id are skipped so
 // that a failed lookup cannot overwrite a good entry from an earlier run.
-void SaveStationCache(const std::unordered_map<std::string, bahnbrett::Station>& cache) {
+// The provider name travels with the cache so a later wakeup can detect a
+// provider switch.
+void SaveStationCache(const std::unordered_map<std::string, bahnbrett::Station>& cache,
+                      const std::string& provider_name) {
   if (cache.empty()) {
     return;
   }
@@ -334,6 +355,7 @@ void SaveStationCache(const std::unordered_map<std::string, bahnbrett::Station>&
   if (prefs.begin("bahnbrett", false)) {
     prefs.putString("station_map", jb.str().c_str());
     prefs.putInt("station_ts", static_cast<int32_t>(now));
+    prefs.putString("station_prov", provider_name.c_str());
     prefs.end();
     Log_info("[bahnbrett] The device stored %u resolved stations in NVS.",
              (unsigned)written);
@@ -384,8 +406,8 @@ https_request_err_e bahnbrett_local_render(void)
   config.bitmap_header_pad = bahnbrett::kBmpHeaderSize;
   Log_info("[bahnbrett] config: w=%d h=%d format=mono1 header_pad=%d",
            config.width, config.height, config.bitmap_header_pad);
-  Log_info("[bahnbrett] config: api=%s refresh_seconds=%d",
-           bahnbrett::EffectiveApiBaseUrl(config).c_str(), config.refresh_seconds);
+  Log_info("[bahnbrett] config: provider=%s refresh_seconds=%d",
+           config.provider.c_str(), config.refresh_seconds);
 
   // Write the configured refresh interval to the sleep timer so bl.cpp
   // applies it when the device enters deep sleep.
@@ -462,27 +484,31 @@ https_request_err_e bahnbrett_local_render(void)
   }
 
   // Prime the provider with stations that earlier wakeups resolved. The
-  // device then skips one /stations request per configured name and pays
-  // for the departures request only.
+  // device then skips one station lookup per configured name and pays for
+  // the departures request only.
+  const std::string provider_name =
+      bahnbrett::ProviderKindName(bahnbrett::ParseProviderKind(config.provider));
   std::unordered_map<std::string, bahnbrett::Station> station_cache =
-      LoadStationCache();
+      LoadStationCache(provider_name);
 
   bahnbrett::FetchReport report;
   {
     bahnbrett::ArduinoHttpClient http_client(true);
-    bahnbrett::TransportRestProvider provider(
-        bahnbrett::EffectiveApiBaseUrl(config), http_client);
-    provider.PrimeStationCache(station_cache);
-    data = provider.GetDashboard(config);
-    report = provider.fetch_report();
-
-    // Keep the stations that this run resolved. A failed lookup yields an
-    // empty id, so it cannot poison the persisted cache.
-    for (const auto& entry : provider.station_cache()) {
-      if (!entry.second.id.empty()) {
-        station_cache[entry.first] = entry.second;
-      }
+    bahnbrett::ProviderSelection selection =
+        bahnbrett::CreateProvider(config, http_client);
+    if (selection.fell_back_to_default) {
+      Log_info("[bahnbrett] The HVV provider has no credentials. The device uses Transitous instead.");
     }
+    Log_info("[bahnbrett] The device uses the %s provider.", provider_name.c_str());
+    status.attribution = selection.provider->Attribution();
+    // The fetcher resolves the configured names, skips the resolution for
+    // names that the cache holds, and writes every resolved station back
+    // into the cache. A failed lookup yields an empty id, so it cannot
+    // poison the persisted cache.
+    bahnbrett::DashboardFetcher fetcher(*selection.provider,
+                                        config.min_poll_seconds);
+    data = fetcher.Fetch(config, &station_cache);
+    report = selection.provider->fetch_report();
   }
 
   if (report.station_lookups > 0) {
@@ -495,14 +521,14 @@ https_request_err_e bahnbrett_local_render(void)
         current[name] = entry->second;
       }
     }
-    SaveStationCache(current);
+    SaveStationCache(current, provider_name);
   }
 
   Log_info("[bahnbrett] The provider made %d station lookups with %d failures and %d departure lookups with %d failures. The last failure kind is %d with status %d.",
            report.station_lookups, report.station_lookup_failures,
            report.departure_lookups, report.departure_lookup_failures,
            static_cast<int>(report.last_failure_kind), report.last_failure_status);
-  Log_info("[bahnbrett] GetDashboard returned widgets=%u", (unsigned)data.size());
+  Log_info("[bahnbrett] The fetcher returned widgets=%u", (unsigned)data.size());
   for (size_t i = 0; i < data.size(); ++i) {
     Log_info("[bahnbrett]   widget[%u]: station_id='%s' name='%s' departures=%u",
              (unsigned)i, data[i].station.id.c_str(),
