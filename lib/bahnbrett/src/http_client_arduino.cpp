@@ -60,12 +60,41 @@ class StringSink : public Stream {
   bool overflow_ = false;
 };
 
+// Reads the response body into `response` through the shared sink. The
+// function clears the body and zeroes the status when the body exceeds the
+// cap, so the caller reports a transport failure.
+bool ReadBody(HTTPClient& http, HttpResponse* response) {
+  constexpr size_t kMaxBody = 128 * 1024;
+  int content_len = http.getSize();
+  if (content_len >= 0 && static_cast<size_t>(content_len) > kMaxBody) {
+    BAHNBRETT_HTTP_LOG("oversize content_len=%d, rejecting", content_len);
+    response->status = 0;
+    return false;
+  }
+  if (content_len > 0) {
+    response->body.reserve(static_cast<size_t>(content_len));
+  }
+  StringSink sink(&response->body, kMaxBody);
+  int written = http.writeToStream(&sink);
+  BAHNBRETT_HTTP_LOG("writeToStream returned %d body=%u overflow=%d",
+                     written, (unsigned)response->body.size(),
+                     sink.overflow() ? 1 : 0);
+  if (sink.overflow()) {
+    response->body.clear();
+    response->body.shrink_to_fit();
+    response->status = 0;
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 ArduinoHttpClient::ArduinoHttpClient(bool insecure_tls) : insecure_tls_(insecure_tls) {
   if (insecure_tls_) {
     client_.setInsecure();
   }
+  http_.setUserAgent(kUserAgent);
   http_.setConnectTimeout(10000);
   http_.setTimeout(30000);
   // Keep the TLS session alive across all requests in one render cycle so
@@ -91,34 +120,44 @@ HttpResponse ArduinoHttpClient::Get(const std::string& url) {
   BAHNBRETT_HTTP_LOG("GET start");
   int code = http_.GET();
   response.status = code;
-  int content_len = http_.getSize();
-  BAHNBRETT_HTTP_LOG("GET done code=%d size=%d", code, content_len);
+  BAHNBRETT_HTTP_LOG("GET done code=%d size=%d", code, http_.getSize());
 
   if (code > 0) {
-    constexpr size_t kMaxBody = 128 * 1024;
-    if (content_len < 0 || static_cast<size_t>(content_len) <= kMaxBody) {
-      if (content_len > 0) {
-        response.body.reserve(static_cast<size_t>(content_len));
-      }
-      // writeToStream handles Transfer-Encoding: chunked. Feeding it our
-      // sink avoids the double-allocation that getString() forced.
-      StringSink sink(&response.body, kMaxBody);
-      int written = http_.writeToStream(&sink);
-      BAHNBRETT_HTTP_LOG("writeToStream returned %d body=%u overflow=%d",
-                         written, (unsigned)response.body.size(),
-                         sink.overflow() ? 1 : 0);
-      if (sink.overflow()) {
-        response.body.clear();
-        response.body.shrink_to_fit();
-        response.status = 0;
-      }
-    } else {
-      BAHNBRETT_HTTP_LOG("oversize content_len=%d, rejecting", content_len);
-      response.status = 0;
-    }
+    ReadBody(http_, &response);
   }
 
   BAHNBRETT_HTTP_LOG("Get() return status=%d body=%u", response.status,
+                     (unsigned)response.body.size());
+  return response;
+}
+
+HttpResponse ArduinoHttpClient::Post(const std::string& url,
+                                     const std::string& body,
+                                     const std::string& content_type,
+                                     const HttpHeaders& headers) {
+  HttpResponse response;
+
+  if (!http_.begin(client_, url.c_str())) {
+    BAHNBRETT_HTTP_LOG("begin() failed url=%s", url.c_str());
+    return response;
+  }
+
+  http_.addHeader("Content-Type", content_type.c_str());
+  http_.addHeader("Accept-Encoding", "identity");
+  for (const auto& header : headers) {
+    http_.addHeader(header.first.c_str(), header.second.c_str());
+  }
+
+  BAHNBRETT_HTTP_LOG("POST start body=%u", (unsigned)body.size());
+  int code = http_.POST(body.c_str());
+  response.status = code;
+  BAHNBRETT_HTTP_LOG("POST done code=%d size=%d", code, http_.getSize());
+
+  if (code > 0) {
+    ReadBody(http_, &response);
+  }
+
+  BAHNBRETT_HTTP_LOG("Post() return status=%d body=%u", response.status,
                      (unsigned)response.body.size());
   return response;
 }
