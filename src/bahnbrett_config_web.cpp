@@ -192,6 +192,11 @@ static const char kConfigPageHtml[] PROGMEM = R"=====(
 <input type="number" id="remote_config_interval" min="1" max="144">
 <div class="hint">Fetch remote config every N wakeups (1 = every time)</div>
 
+<h2>TLS</h2>
+<label for="pinned_tls_cert">Pinned TLS certificate (optional)</label>
+<textarea id="pinned_tls_cert" rows="6" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+<div class="hint">The device verifies every HTTPS host against a built-in bundle of public root certificates. Paste the PEM certificate of your own CA here only when a self-hosted host runs behind a private CA. Export the certificate in PEM form, paste it, and save. Empty = the built-in root bundle.</div>
+
 <div class="btn-row">
   <button type="button" class="btn-cancel" onclick="cancelConfig()">Cancel</button>
   <button type="button" class="btn-save" onclick="saveConfig()">Save &amp; Reboot</button>
@@ -247,6 +252,7 @@ function populate() {
   setVal('hvv_user', cfg.hvv_user);
   setVal('hvv_key', cfg.hvv_key);
   setVal('hvv_base_url', cfg.hvv_base_url);
+  setVal('pinned_tls_cert', cfg.pinned_tls_cert);
   setVal('min_poll_seconds', cfg.min_poll_seconds);
   setVal('max_departures_to_fetch_per_widget', cfg.max_departures_to_fetch_per_widget);
   setVal('remote_config_url', cfg.remote_config_url);
@@ -316,6 +322,7 @@ function getFormData() {
     hvv_user: document.getElementById('hvv_user').value.trim(),
     hvv_key: document.getElementById('hvv_key').value.trim(),
     hvv_base_url: document.getElementById('hvv_base_url').value.trim(),
+    pinned_tls_cert: document.getElementById('pinned_tls_cert').value.trim(),
     min_poll_seconds: parseInt(document.getElementById('min_poll_seconds').value) || 60,
     max_departures_to_fetch_per_widget: parseInt(document.getElementById('max_departures_to_fetch_per_widget').value) || 50,
     remote_config_url: document.getElementById('remote_config_url').value.trim(),
@@ -419,6 +426,7 @@ std::string CurrentConfigJson() {
   jb.KeyString("hvv_base_url", cfg.hvv_base_url);
   jb.KeyString("hvv_user", cfg.hvv_user);
   jb.KeyString("hvv_key", cfg.hvv_key);
+  jb.KeyString("pinned_tls_cert", cfg.pinned_tls_cert);
   WriteStrVec("station_names", cfg.station_names);
   WriteStrVec("line_filters", cfg.line_filters);
   WriteStrVec("route_filters", cfg.route_filters);
@@ -555,6 +563,7 @@ bool SaveConfigFromJson(const std::string& json_str, std::string* error) {
   config.hvv_base_url = getString("hvv_base_url", "");
   config.hvv_user = getString("hvv_user", "");
   config.hvv_key = getString("hvv_key", "");
+  config.pinned_tls_cert = getString("pinned_tls_cert", "");
 
   // Use the free function to persist. The NVS store logs the exact key
   // that fails, so this message names the general cause only.

@@ -228,8 +228,12 @@ void bahnbrett_render_boot_screen(void) {
   bahnbrett::Bitmap bitmap = MakeStaticBitmap(config);
 
   // The factory honors the HVV credential fallback, so the note names the
-  // provider that the device actually uses.
-  bahnbrett::ArduinoHttpClient http_client(true);
+  // provider that the device actually uses. The production build verifies
+  // every host against the root bundle or the pinned certificate; see
+  // ADR 0040.
+  bahnbrett::ArduinoHttpClient http_client(
+      bahnbrett::ChooseTlsMode(false, config.pinned_tls_cert),
+      config.pinned_tls_cert);
   bahnbrett::ProviderSelection selection =
       bahnbrett::CreateProvider(config, http_client);
 
@@ -597,7 +601,11 @@ https_request_err_e bahnbrett_local_render(void)
             }
           }
 
-          bahnbrett::ArduinoHttpClient http_client(true);
+          // The remote host verifies against the root bundle or the pinned
+          // certificate; see ADR 0040.
+          bahnbrett::ArduinoHttpClient http_client(
+              bahnbrett::ChooseTlsMode(false, config.pinned_tls_cert),
+              config.pinned_tls_cert);
           bahnbrett::HttpResponse resp = http_client.Get(remote_url.c_str());
           if (resp.status == 200 && !resp.body.empty()) {
             bahnbrett::JsonValue root;
@@ -661,7 +669,11 @@ https_request_err_e bahnbrett_local_render(void)
 
   bahnbrett::FetchReport report;
   {
-    bahnbrett::ArduinoHttpClient http_client(true);
+    // Every provider host verifies against the root bundle or the pinned
+    // certificate; see ADR 0040.
+    bahnbrett::ArduinoHttpClient http_client(
+        bahnbrett::ChooseTlsMode(false, config.pinned_tls_cert),
+        config.pinned_tls_cert);
     bahnbrett::ProviderSelection selection =
         bahnbrett::CreateProvider(config, http_client);
     if (selection.fell_back_to_default) {
