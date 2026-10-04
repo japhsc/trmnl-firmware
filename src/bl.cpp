@@ -2225,6 +2225,11 @@ static float readBatteryVoltage(void)
  */
 bool submitLogString(const char *log_buffer)
 {
+#ifdef BAHNBRETT_LOCAL_RENDER
+  // The Bahnbrett build makes no call to the TRMNL cloud; see ADR 0041.
+  // The caller stores the log locally when this function reports failure.
+  return false;
+#endif
   String api_key = "";
   if (preferences.isKey(PREFERENCES_API_KEY))
   {
@@ -2276,6 +2281,12 @@ uint32_t getTime(void)
 
 static void submitStoredLogs(void)
 {
+#ifdef BAHNBRETT_LOCAL_RENDER
+  // The Bahnbrett build renders locally and needs no TRMNL cloud account.
+  // The device never submits stored logs; see ADR 0041. The store stays a
+  // bounded ring, so the entries rotate out without a drain.
+  return;
+#endif
   if (WiFi.isConnected() == false)
   {
     Log_info("WiFi not connected; not submitting stored logs.");
