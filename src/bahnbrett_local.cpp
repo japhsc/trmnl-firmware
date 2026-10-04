@@ -50,8 +50,9 @@ void bahnbrett_trigger_easter_egg(void) {
 
 // Single static bitmap buffer reused for every refresh. Lives in BSS so the
 // 48 KB chunk is reserved at link time and can never be lost to heap
-// fragmentation. Sized for the worst-case TRMNL panel (800x480, 1-bpp) plus
-// the 62-byte BMP header slot used by the in-place encoder.
+// fragmentation. Sized for the worst-case TRMNL panel (800x480, 1-bpp) at
+// the padded 4-byte BMP row stride, plus the 62-byte BMP header slot used by
+// the in-place encoder; see ADR 0051.
 // 4-byte aligned to satisfy any DMA / 32-bit-read assumptions in bbep.
 namespace {
 
@@ -59,7 +60,8 @@ constexpr int kBahnbrettMaxWidth = 800;
 constexpr int kBahnbrettMaxHeight = 480;
 constexpr size_t kBahnbrettStaticBufferSize =
     static_cast<size_t>(bahnbrett::kBmpHeaderSize) +
-    (kBahnbrettMaxWidth + 7) / 8 * kBahnbrettMaxHeight;
+    static_cast<size_t>(((kBahnbrettMaxWidth + 31) / 32) * 4) *
+        static_cast<size_t>(kBahnbrettMaxHeight);
 
 }  // namespace
 
@@ -67,9 +69,24 @@ alignas(4) static uint8_t g_bahnbrett_bitmap_buffer[kBahnbrettStaticBufferSize];
 
 namespace {
 
-bahnbrett::Bitmap MakeStaticBitmap(const bahnbrett::DashboardConfig& config) {
-  size_t need = bahnbrett::Bitmap::RequiredBufferSize(
+// The in-place encoder writes rows at the padded 4-byte BMP stride, so the
+// per-panel buffer size must cover that stride, not the compact one; see
+// ADR 0051.
+size_t RequiredPanelBufferSize(const bahnbrett::DashboardConfig& config) {
+  const size_t compact = bahnbrett::Bitmap::RequiredBufferSize(
       config.width, config.height, config.format, config.bitmap_header_pad);
+  if (config.format != bahnbrett::PixelFormat::kMono1) {
+    return compact;
+  }
+  const int bmp_row_stride = ((config.width + 31) / 32) * 4;
+  const size_t padded =
+      static_cast<size_t>(bahnbrett::kBmpHeaderSize) +
+      static_cast<size_t>(bmp_row_stride) * static_cast<size_t>(config.height);
+  return padded > compact ? padded : compact;
+}
+
+bahnbrett::Bitmap MakeStaticBitmap(const bahnbrett::DashboardConfig& config) {
+  size_t need = RequiredPanelBufferSize(config);
   if (need > kBahnbrettStaticBufferSize) {
     Log_info("[bahnbrett] FATAL: panel %dx%d needs %u bytes, static buffer is %u",
              config.width, config.height, (unsigned)need,
@@ -79,7 +96,7 @@ bahnbrett::Bitmap MakeStaticBitmap(const bahnbrett::DashboardConfig& config) {
   return bahnbrett::Bitmap(config.width, config.height, config.format,
                            config.bitmap_header_pad,
                            g_bahnbrett_bitmap_buffer,
-                           kBahnbrettStaticBufferSize);
+                           need);
 }
 
 bool PresentBitmap(const bahnbrett::DashboardConfig& config,
