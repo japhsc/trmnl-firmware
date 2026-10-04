@@ -244,9 +244,15 @@ void bahnbrett_render_config_screen(void) {
   // Thin vertical separator between text and QR columns.
   bitmap.FillRect(qr_right + 10, bar_h + 20, 2, h - bar_h - 80, kBlack);
 
-  // Footer hint.
+  // Footer hint. The entry action differs per board: the three-key
+  // boards enter the config mode with KEY2; the one-button boards need
+  // a triple-click. See the button handling in bl.cpp.
   int footer_y = h - 40;
+#if defined(BOARD_XIAO_EPAPER_DISPLAY) || defined(BOARD_XIAO_EPAPER_DISPLAY_3CLR)
+  bitmap.DrawTextScaledF(left, footer_y, "Press KEY2 to enter this mode", kBlack, 1.2f);
+#else
   bitmap.DrawTextScaledF(left, footer_y, "Triple-click the button to enter this mode", kBlack, 1.2f);
+#endif
   bitmap.FillRect(0, footer_y - 15, w, 2, kBlack);
 
   // Attribution of the configured data source. Transitous requires a
