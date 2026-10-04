@@ -150,6 +150,29 @@ bool bahnbrett_render_easter_egg_now(void) {
   return PresentBitmap(config, &bitmap);
 }
 
+// The boot flash that replaces the stock TRMNL logo at startup. The flash
+// is the only screen that shows the departure-data attribution; the
+// dashboard and the config screen carry no note; see ADR 0038.
+void bahnbrett_render_boot_screen(void) {
+  bahnbrett::DashboardConfig config = bahnbrett::LoadEffectiveConfig();
+  config.width = static_cast<int>(display_width());
+  config.height = static_cast<int>(display_height());
+  config.format = bahnbrett::PixelFormat::kMono1;
+  config.bitmap_header_pad = bahnbrett::kBmpHeaderSize;
+
+  bahnbrett::Bitmap bitmap = MakeStaticBitmap(config);
+
+  // The factory honors the HVV credential fallback, so the note names the
+  // provider that the device actually uses.
+  bahnbrett::ArduinoHttpClient http_client(true);
+  bahnbrett::ProviderSelection selection =
+      bahnbrett::CreateProvider(config, http_client);
+
+  bahnbrett::RenderBootScreenInto(bitmap, config,
+                                  selection.provider->Attribution());
+  PresentBitmap(config, &bitmap);
+}
+
 namespace {
 
 // Draw a QR code onto the bitmap at (ox, oy) with each module scaled to
@@ -254,13 +277,6 @@ void bahnbrett_render_config_screen(void) {
   bitmap.DrawTextScaledF(left, footer_y, "Triple-click the button to enter this mode", kBlack, 1.2f);
 #endif
   bitmap.FillRect(0, footer_y - 15, w, 2, kBlack);
-
-  // Attribution of the configured data source. Transitous requires a
-  // visible link to its sources page; see ADR 0034.
-  const bahnbrett::DashboardConfig stored = bahnbrett::LoadEffectiveConfig();
-  const std::string attribution = bahnbrett::ProviderAttribution(
-      bahnbrett::ParseProviderKind(stored.provider));
-  bitmap.DrawTextScaledF(left, h - 16, attribution, kBlack, 1.0f);
 
   PresentBitmap(config, &bitmap);
 }
@@ -513,7 +529,6 @@ https_request_err_e bahnbrett_local_render(void)
       Log_info("[bahnbrett] The HVV provider has no credentials. The device uses Transitous instead.");
     }
     Log_info("[bahnbrett] The device uses the %s provider.", provider_name.c_str());
-    status.attribution = selection.provider->Attribution();
     // The fetcher resolves the configured names, skips the resolution for
     // names that the cache holds, and writes every resolved station back
     // into the cache. A failed lookup yields an empty id, so it cannot

@@ -381,9 +381,18 @@ void bl_init(void)
   {
     Log.info("%s [%d]: Display TRMNL logo start\r\n", __FILE__, __LINE__);
 
-  
+#ifdef BAHNBRETT_LOCAL_RENDER
+    // The Bahnbrett build replaces the stock logo flash with its own boot
+    // screen. The screen carries the departure-data attribution; the
+    // dashboard shows no footer; see ADR 0038.
+    // storedLogoOrDefault() forces a full refresh for panels with unknown
+    // update-mode support. The Bahnbrett branch skips that call, so set the
+    // flag here and keep the same caution.
+    apiDisplayResult.response.maximum_compatibility = true;
+    bahnbrett_render_boot_screen();
+#else
     display_show_image(storedLogoOrDefault(1), DEFAULT_IMAGE_SIZE, false);
-
+#endif
 
     need_to_refresh_display = 1;
     preferences.putBool(PREFERENCES_DEVICE_REGISTERED_KEY, false);
