@@ -85,13 +85,41 @@ size_t RequiredPanelBufferSize(const bahnbrett::DashboardConfig& config) {
   return padded > compact ? padded : compact;
 }
 
+// A panel that reports more than the buffer capacity cannot render through
+// the static buffer. The entry points clamp the render to the capacity, so
+// the renderer and the bitmap stay coherent. The present step then reports
+// the size mismatch as a failure instead of corrupting the buffer; see
+// ADR 0045.
+void ClampPanelToBuffer(bahnbrett::DashboardConfig* config) {
+  if (config->width <= kBahnbrettMaxWidth && config->height <= kBahnbrettMaxHeight) {
+    return;
+  }
+  Log_info("[bahnbrett] The panel reports %dx%d pixels. The device clamps the render to %dx%d pixels because the static bitmap buffer holds no more. The present step reports the mismatch as a failure.",
+           config->width, config->height, kBahnbrettMaxWidth, kBahnbrettMaxHeight);
+  if (config->width > kBahnbrettMaxWidth) {
+    config->width = kBahnbrettMaxWidth;
+  }
+  if (config->height > kBahnbrettMaxHeight) {
+    config->height = kBahnbrettMaxHeight;
+  }
+}
+
 bahnbrett::Bitmap MakeStaticBitmap(const bahnbrett::DashboardConfig& config) {
   size_t need = RequiredPanelBufferSize(config);
   if (need > kBahnbrettStaticBufferSize) {
-    Log_info("[bahnbrett] FATAL: panel %dx%d needs %u bytes, static buffer is %u",
+    // The clamp bounds every caller to the buffer, so this branch is not
+    // reachable. It stays as a guard: the device refuses to abort, renders
+    // a minimal bitmap, and the present step fails on the size mismatch.
+    Log_info("[bahnbrett] The bitmap for a %dx%d panel needs %u bytes, but the static buffer holds %u bytes. The device renders a minimal bitmap instead of aborting.",
              config.width, config.height, (unsigned)need,
              (unsigned)kBahnbrettStaticBufferSize);
-    abort();
+    bahnbrett::DashboardConfig minimal = config;
+    minimal.width = 1;
+    minimal.height = 1;
+    return bahnbrett::Bitmap(minimal.width, minimal.height, minimal.format,
+                             minimal.bitmap_header_pad,
+                             g_bahnbrett_bitmap_buffer,
+                             RequiredPanelBufferSize(minimal));
   }
   return bahnbrett::Bitmap(config.width, config.height, config.format,
                            config.bitmap_header_pad,
@@ -101,9 +129,13 @@ bahnbrett::Bitmap MakeStaticBitmap(const bahnbrett::DashboardConfig& config) {
 
 bool PresentBitmap(const bahnbrett::DashboardConfig& config,
                    bahnbrett::Bitmap* bitmap) {
+  // The display layer flips rows at the panel size it reports, so the
+  // present step checks the bitmap against the panel itself, not against
+  // the render config. A clamped render (see ClampPanelToBuffer) fails
+  // here instead of corrupting the buffer; see ADR 0045.
   bahnbrett::DisplayTarget target;
-  target.width = config.width;
-  target.height = config.height;
+  target.width = static_cast<int>(display_width());
+  target.height = static_cast<int>(display_height());
   target.format = config.format;
   bahnbrett::TrmnlBmpBackend backend(target);
   Log_info("[bahnbrett] PresentBitmap: w=%d h=%d header_pad=%d buf_size=%u path=%s",
@@ -127,6 +159,20 @@ bool RenderAndPresent(const bahnbrett::DashboardConfig& config,
   Log_info("[bahnbrett] RenderAndPresent: widgets=%u error='%s' wifi=%d",
            (unsigned)data->size(), status.error_message.c_str(),
            static_cast<int>(status.wifi_state));
+
+  // The display layer drives the panel it reports, so a render size that
+  // differs from the panel cannot reach the screen. The clamp causes this
+  // when a panel reports more than the buffer holds. The device skips the
+  // render and reports a failure; see ADR 0045.
+  if (config.width != static_cast<int>(display_width()) ||
+      config.height != static_cast<int>(display_height())) {
+    Log_info("[bahnbrett] The render size %dx%d does not match the panel size %dx%d. The device skips the render and retries at the next wake.",
+             config.width, config.height,
+             static_cast<int>(display_width()),
+             static_cast<int>(display_height()));
+    return false;
+  }
+
   bahnbrett_log_heap("pre-render");
 
   // Prefer the API's Date header over the local clock: on the device the
@@ -161,6 +207,7 @@ bool bahnbrett_render_easter_egg_now(void) {
   config.height = static_cast<int>(display_height());
   config.format = bahnbrett::PixelFormat::kMono1;
   config.bitmap_header_pad = bahnbrett::kBmpHeaderSize;
+  ClampPanelToBuffer(&config);
 
   bahnbrett::Bitmap bitmap = MakeStaticBitmap(config);
   bahnbrett::RenderEasterEggInto(bitmap, config);
@@ -176,6 +223,7 @@ void bahnbrett_render_boot_screen(void) {
   config.height = static_cast<int>(display_height());
   config.format = bahnbrett::PixelFormat::kMono1;
   config.bitmap_header_pad = bahnbrett::kBmpHeaderSize;
+  ClampPanelToBuffer(&config);
 
   bahnbrett::Bitmap bitmap = MakeStaticBitmap(config);
 
@@ -222,6 +270,7 @@ void bahnbrett_render_config_screen(void) {
   config.height = static_cast<int>(display_height());
   config.format = bahnbrett::PixelFormat::kMono1;
   config.bitmap_header_pad = bahnbrett::kBmpHeaderSize;
+  ClampPanelToBuffer(&config);
 
   bahnbrett::Bitmap bitmap = MakeStaticBitmap(config);
   int w = bitmap.width();
@@ -451,6 +500,28 @@ bool HeapHasRoomForFetch(const char* what) {
   return false;
 }
 
+// A failed wake must not refresh the panel at a short interval around the
+// clock; that wears the panel and drains the battery. The floor raises the
+// stored sleep interval for this wake only. The next wake writes the
+// configured interval again; see ADR 0045.
+constexpr uint32_t kMinSleepSecondsAfterFailure = 300;
+
+// Marks the wake as failed and raises the sleep interval to the failure
+// floor when the stored interval sits below it.
+https_request_err_e FailRender(https_request_err_e result) {
+  Preferences prefs;
+  if (prefs.begin("data", false)) {
+    uint32_t current = prefs.getUInt(PREFERENCES_SLEEP_TIME_KEY, 0);
+    if (current < kMinSleepSecondsAfterFailure) {
+      prefs.putUInt(PREFERENCES_SLEEP_TIME_KEY, kMinSleepSecondsAfterFailure);
+      Log_info("[bahnbrett] The render failed. The device raises the sleep interval from %u seconds to %u seconds for this wake.",
+               (unsigned)current, (unsigned)kMinSleepSecondsAfterFailure);
+    }
+    prefs.end();
+  }
+  return result;
+}
+
 }  // namespace
 
 https_request_err_e bahnbrett_local_render(void)
@@ -469,6 +540,7 @@ https_request_err_e bahnbrett_local_render(void)
   config.height = static_cast<int>(display_height());
   config.format = bahnbrett::PixelFormat::kMono1;
   config.bitmap_header_pad = bahnbrett::kBmpHeaderSize;
+  ClampPanelToBuffer(&config);
   Log_info("[bahnbrett] config: w=%d h=%d format=mono1 header_pad=%d",
            config.width, config.height, config.bitmap_header_pad);
   Log_info("[bahnbrett] config: provider=%s refresh_seconds=%d",
@@ -487,7 +559,7 @@ https_request_err_e bahnbrett_local_render(void)
     status.wifi_rssi_dbm = -100;
     status.error_message = "WiFi unavailable";
     RenderAndPresent(config, &data, status, server_epoch);
-    return HTTPS_UNABLE_TO_CONNECT;
+    return FailRender(HTTPS_UNABLE_TO_CONNECT);
   }
 
   status.wifi_state = bahnbrett::RenderStatus::WifiState::kConnected;
@@ -584,7 +656,7 @@ https_request_err_e bahnbrett_local_render(void)
     Log_info("[bahnbrett] The device shows the failure message: %s",
              status.error_message.c_str());
     RenderAndPresent(config, &data, status, server_epoch);
-    return HTTPS_REQUEST_FAILED;
+    return FailRender(HTTPS_REQUEST_FAILED);
   }
 
   bahnbrett::FetchReport report;
@@ -667,12 +739,12 @@ https_request_err_e bahnbrett_local_render(void)
     Log_info("[bahnbrett] The device shows the failure message: %s",
              status.error_message.c_str());
     RenderAndPresent(config, &data, status, server_epoch);
-    return HTTPS_REQUEST_FAILED;
+    return FailRender(HTTPS_REQUEST_FAILED);
   }
 
   if (!RenderAndPresent(config, &data, status, server_epoch)) {
     Log_info("[bahnbrett] RenderAndPresent reported failure");
-    return HTTPS_REQUEST_FAILED;
+    return FailRender(HTTPS_REQUEST_FAILED);
   }
 
   Log_info("[bahnbrett] bahnbrett_local_render success");
