@@ -414,6 +414,26 @@ void ApplyRefreshInterval(const bahnbrett::DashboardConfig& config) {
            refresh);
 }
 
+// The departure fetch needs room for the response body, the JSON tree, and
+// the TLS buffers. The crash log from 2026-10 shows 206 KB free at the
+// render entry with WiFi up, so a 160 KB floor keeps room for the 48 KB
+// body cap and its parse tree while it refuses a degraded heap; see
+// ADR 0039.
+constexpr size_t kMinFreeHeapForFetchBytes = 160 * 1024;
+
+// Returns true when the heap holds enough room for a fetch. The function
+// logs the numbers when it refuses, so the serial log shows the cause.
+bool HeapHasRoomForFetch(const char* what) {
+  size_t free_heap = ESP.getFreeHeap();
+  if (free_heap >= kMinFreeHeapForFetchBytes) {
+    return true;
+  }
+  Log_info("[bahnbrett] The device skips the %s fetch because the free heap is %u bytes and the floor is %u bytes. Restart the device to restore the heap.",
+           what, (unsigned)free_heap,
+           (unsigned)kMinFreeHeapForFetchBytes);
+  return false;
+}
+
 }  // namespace
 
 https_request_err_e bahnbrett_local_render(void)
@@ -472,6 +492,12 @@ https_request_err_e bahnbrett_local_render(void)
         Log_info("[bahnbrett] remote config: url=%s interval=%d count=%d fetch=%d",
                  remote_url.c_str(), remote_interval, wakeup_count, should_fetch ? 1 : 0);
 
+        if (should_fetch && !HeapHasRoomForFetch("remote config")) {
+          // The heap is too low for the fetch. The else path keeps the
+          // wakeup counter, so the next wake retries the remote config.
+          should_fetch = false;
+        }
+
         if (should_fetch) {
           // Reset counter
           {
@@ -508,6 +534,19 @@ https_request_err_e bahnbrett_local_render(void)
     }
   }
 
+  // The response cap of 48 KB holds about 20 stoptimes at the 2.2 KB that
+  // ADR 0034 measures per entry, so the device clamps the configured count.
+  // A busy stop returns fewer rows, and the dashboard still renders; see
+  // ADR 0039.
+  constexpr int kMaxDeparturesPerWidgetOnDevice = 20;
+  if (config.max_departures_to_fetch_per_widget >
+      kMaxDeparturesPerWidgetOnDevice) {
+    Log_info("[bahnbrett] The device clamps the fetch count from %d to %d departures per widget.",
+             config.max_departures_to_fetch_per_widget,
+             kMaxDeparturesPerWidgetOnDevice);
+    config.max_departures_to_fetch_per_widget = kMaxDeparturesPerWidgetOnDevice;
+  }
+
   // Write the configured refresh interval to the sleep timer so bl.cpp
   // applies it when the device enters deep sleep. The remote config runs
   // first, so a remote refresh_seconds change applies at this wake; see
@@ -521,6 +560,15 @@ https_request_err_e bahnbrett_local_render(void)
       bahnbrett::ProviderKindName(bahnbrett::ParseProviderKind(config.provider));
   std::unordered_map<std::string, bahnbrett::Station> station_cache =
       LoadStationCache(provider_name);
+
+  if (!HeapHasRoomForFetch("departures")) {
+    status.error_message =
+        "Memory is low. Restart the device and remove stations.";
+    Log_info("[bahnbrett] The device shows the failure message: %s",
+             status.error_message.c_str());
+    RenderAndPresent(config, &data, status, server_epoch);
+    return HTTPS_REQUEST_FAILED;
+  }
 
   bahnbrett::FetchReport report;
   {

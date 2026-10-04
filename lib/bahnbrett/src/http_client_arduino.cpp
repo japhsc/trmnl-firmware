@@ -83,13 +83,16 @@ void ApplyDateHeader(HTTPClient* http, HttpResponse* response) {
   }
 }
 
+// The response body cap keeps the body, the JSON tree, and the TLS buffers
+// inside the device heap; see ADR 0039. The Linux client allows more.
+constexpr size_t kMaxBodyBytes = 48 * 1024;
+
 // Reads the response body into `response` through the shared sink. The
 // function clears the body and zeroes the status when the body exceeds the
 // cap, so the caller reports a transport failure.
 bool ReadBody(HTTPClient& http, HttpResponse* response) {
-  constexpr size_t kMaxBody = 128 * 1024;
   int content_len = http.getSize();
-  if (content_len >= 0 && static_cast<size_t>(content_len) > kMaxBody) {
+  if (content_len >= 0 && static_cast<size_t>(content_len) > kMaxBodyBytes) {
     BAHNBRETT_HTTP_LOG("oversize content_len=%d, rejecting", content_len);
     response->status = 0;
     return false;
@@ -97,7 +100,7 @@ bool ReadBody(HTTPClient& http, HttpResponse* response) {
   if (content_len > 0) {
     response->body.reserve(static_cast<size_t>(content_len));
   }
-  StringSink sink(&response->body, kMaxBody);
+  StringSink sink(&response->body, kMaxBodyBytes);
   int written = http.writeToStream(&sink);
   BAHNBRETT_HTTP_LOG("writeToStream returned %d body=%u overflow=%d",
                      written, (unsigned)response->body.size(),
