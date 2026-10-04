@@ -437,10 +437,6 @@ https_request_err_e bahnbrett_local_render(void)
   Log_info("[bahnbrett] config: provider=%s refresh_seconds=%d",
            config.provider.c_str(), config.refresh_seconds);
 
-  // Write the configured refresh interval to the sleep timer so bl.cpp
-  // applies it when the device enters deep sleep.
-  ApplyRefreshInterval(config);
-
   // Easter egg is now handled earlier in bl_init(), before WiFi.
   // If we reach here, g_show_easter_egg is already false.
 
@@ -511,6 +507,12 @@ https_request_err_e bahnbrett_local_render(void)
       }
     }
   }
+
+  // Write the configured refresh interval to the sleep timer so bl.cpp
+  // applies it when the device enters deep sleep. The remote config runs
+  // first, so a remote refresh_seconds change applies at this wake; see
+  // ADR 0042.
+  ApplyRefreshInterval(config);
 
   // Prime the provider with stations that earlier wakeups resolved. The
   // device then skips one station lookup per configured name and pays for

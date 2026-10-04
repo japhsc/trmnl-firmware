@@ -359,6 +359,23 @@ populate();
 
 namespace {
 
+// Escapes '<' as a JSON unicode escape so a config value such as
+// "</script>" cannot close the page's script block. Every '<' in the JSON
+// text sits inside a string literal, so the escape keeps the JSON valid
+// and the browser decodes it back to '<'; see ADR 0042.
+std::string EscapeForScriptEmbed(const std::string& json) {
+  std::string out;
+  out.reserve(json.size());
+  for (char c : json) {
+    if (c == '<') {
+      out += "\\u003c";
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
 // Build a JSON string for the current config (including remote_config_url).
 std::string CurrentConfigJson() {
   bahnbrett::DashboardConfig cfg = bahnbrett::LoadEffectiveConfig();
@@ -413,7 +430,6 @@ std::string CurrentConfigJson() {
   jb.KeyNumber("max_departure_minutes", cfg.max_departure_minutes);
   jb.KeyString("home_city", cfg.home_city);
   jb.KeyBool("show_delays", cfg.show_delays);
-  jb.KeyString("api_base_url", cfg.api_base_url);
   jb.KeyNumber("grid_cols", cfg.grid_cols);
   jb.KeyNumber("grid_rows", cfg.grid_rows);
 
@@ -441,10 +457,13 @@ std::string CurrentConfigJson() {
 }
 
 // Deserialize form JSON into DashboardConfig and save to NVS.
-// Also saves remote_config_url and remote_config_interval.
-bool SaveConfigFromJson(const std::string& json_str) {
+// Also saves remote_config_url and remote_config_interval. On failure the
+// function writes a full sentence into *error that states the cause and
+// the fix; see ADR 0042.
+bool SaveConfigFromJson(const std::string& json_str, std::string* error) {
   bahnbrett::JsonValue root;
   if (!bahnbrett::ParseJson(json_str, &root) || root.type != bahnbrett::JsonValue::Type::kObject) {
+    *error = "The config body is not valid JSON. Check the form fields and save the config again.";
     return false;
   }
 
@@ -531,8 +550,10 @@ bool SaveConfigFromJson(const std::string& json_str) {
   config.hvv_user = getString("hvv_user", "");
   config.hvv_key = getString("hvv_key", "");
 
-  // Use the free function to persist.
+  // Use the free function to persist. The NVS store logs the exact key
+  // that fails, so this message names the general cause only.
   if (!bahnbrett::SaveConfigToNvs(config)) {
+    *error = "The device cannot store the config because a value is too large for NVS. Remove stations or filters and save the config again.";
     return false;
   }
 
@@ -557,6 +578,13 @@ bool SaveConfigFromJson(const std::string& json_str) {
 // Flag to signal that config was saved (set by save endpoint, read by main loop).
 volatile bool g_config_saved = false;
 volatile bool g_config_cancelled = false;
+
+// Body buffer for the save endpoint. The web server delivers the body in
+// TCP-sized chunks; the upload callback appends each chunk and the request
+// callback parses the complete body exactly once; see ADR 0042.
+constexpr size_t kMaxSaveBodyBytes = 8 * 1024;
+std::string g_save_body;
+bool g_save_body_overflow = false;
 
 }  // namespace
 
@@ -604,9 +632,9 @@ bool bahnbrett_config_web_start(void) {
 
   // GET / — serve the config editor page with embedded current config
   server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
-    std::string config_json = CurrentConfigJson();
+    std::string config_json = EscapeForScriptEmbed(CurrentConfigJson());
     std::string page = kConfigPageHtml;
-    // Replace placeholder with actual JSON
+    // Replace placeholder with the escaped JSON
     const char* placeholder = "CONFIG_JSON_PLACEHOLDER";
     size_t pos = page.find(placeholder);
     if (pos != std::string::npos) {
@@ -622,19 +650,48 @@ bool bahnbrett_config_web_start(void) {
   });
 
   // POST /api/config/save — save config and signal reboot
+  // The web server delivers the body in TCP-sized chunks. The upload
+  // callback only buffers the chunks; the request callback runs once the
+  // body is complete and parses the JSON exactly once; see ADR 0042.
   server.on("/api/config/save", HTTP_POST,
-    [](AsyncWebServerRequest* request) {},
-    nullptr,
-    [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
-      std::string body(reinterpret_cast<char*>(data), len);
-      Log_info("[bahnbrett_config] Save request: %s", body.c_str());
-
-      if (SaveConfigFromJson(body)) {
+    [](AsyncWebServerRequest* request) {
+      if (g_save_body_overflow) {
+        g_save_body_overflow = false;
+        request->send(400, "text/plain",
+          "The config body exceeds 8192 bytes. Remove stations or filters and save the config again.");
+        return;
+      }
+      // The body carries the HVV secret, so the log records the length only.
+      Log_info("[bahnbrett_config] The save request carries %u bytes.",
+               (unsigned)g_save_body.size());
+      std::string error;
+      if (SaveConfigFromJson(g_save_body, &error)) {
         g_config_saved = true;
         request->redirect("/saved");
       } else {
-        request->send(400, "text/plain", "Invalid JSON");
+        request->send(400, "text/plain", error.c_str());
       }
+      g_save_body.clear();
+      g_save_body.shrink_to_fit();
+    },
+    nullptr,
+    [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+      (void)request;
+      (void)total;
+      if (index == 0) {
+        g_save_body.clear();
+        g_save_body_overflow = false;
+      }
+      if (g_save_body_overflow) {
+        return;
+      }
+      if (g_save_body.size() + len > kMaxSaveBodyBytes) {
+        g_save_body_overflow = true;
+        g_save_body.clear();
+        g_save_body.shrink_to_fit();
+        return;
+      }
+      g_save_body.append(reinterpret_cast<const char*>(data), len);
     });
 
   // POST /api/config/cancel — cancel and signal sleep
