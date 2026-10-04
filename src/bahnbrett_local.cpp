@@ -38,7 +38,7 @@ static void bahnbrett_log_heap(const char* tag) {
   size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
   size_t largest_internal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
   size_t free_total = ESP.getFreeHeap();
-  Log_info("[bahnbrett] heap @ %s: total_free=%u internal_free=%u internal_largest=%u",
+  Log_info("[bahnbrett] The heap at %s holds %u bytes free in total, %u bytes internal, and a largest internal block of %u bytes.",
            tag, (unsigned)free_total, (unsigned)free_internal, (unsigned)largest_internal);
 }
 
@@ -138,7 +138,7 @@ bool PresentBitmap(const bahnbrett::DashboardConfig& config,
   target.height = static_cast<int>(display_height());
   target.format = config.format;
   bahnbrett::TrmnlBmpBackend backend(target);
-  Log_info("[bahnbrett] PresentBitmap: w=%d h=%d header_pad=%d buf_size=%u path=%s",
+  Log_info("[bahnbrett] The present step takes a %dx%d bitmap with a header pad of %d bytes, a buffer of %u bytes, and the %s path.",
            bitmap->width(), bitmap->height(), bitmap->header_pad(),
            (unsigned)bitmap->buffer_size(),
            bitmap->header_pad() == bahnbrett::kBmpHeaderSize ? "in-place" : "legacy");
@@ -148,7 +148,7 @@ bool PresentBitmap(const bahnbrett::DashboardConfig& config,
   } else {
     ok = backend.Present(*bitmap);
   }
-  Log_info("[bahnbrett] PresentBitmap result=%d", ok ? 1 : 0);
+  Log_info("[bahnbrett] The present step reports the result %d.", ok ? 1 : 0);
   return ok;
 }
 
@@ -156,7 +156,7 @@ bool RenderAndPresent(const bahnbrett::DashboardConfig& config,
                       std::vector<bahnbrett::WidgetData>* data,
                       const bahnbrett::RenderStatus& status,
                       bahnbrett::EpochSeconds server_epoch) {
-  Log_info("[bahnbrett] RenderAndPresent: widgets=%u error='%s' wifi=%d",
+  Log_info("[bahnbrett] The render step receives %u widgets, the error message '%s', and the WiFi state %d.",
            (unsigned)data->size(), status.error_message.c_str(),
            static_cast<int>(status.wifi_state));
 
@@ -183,7 +183,7 @@ bool RenderAndPresent(const bahnbrett::DashboardConfig& config,
                                           : bahnbrett::NowEpochSeconds();
   bahnbrett::Bitmap bitmap = MakeStaticBitmap(config);
   bahnbrett::RenderDashboardInto(bitmap, config, *data, now_epoch, status);
-  Log_info("[bahnbrett] RenderDashboardInto done: bitmap w=%d h=%d stride=%d header_pad=%d size=%u owns=%d",
+  Log_info("[bahnbrett] The render step finishes the bitmap with width %d, height %d, stride %d, header pad %d, size %u, and ownership %d.",
            bitmap.width(), bitmap.height(), bitmap.row_stride(),
            bitmap.header_pad(), (unsigned)bitmap.buffer_size(),
            bitmap.owns_storage() ? 1 : 0);
@@ -530,7 +530,7 @@ https_request_err_e FailRender(https_request_err_e result) {
 
 https_request_err_e bahnbrett_local_render(void)
 {
-  Log_info("[bahnbrett] bahnbrett_local_render entry");
+  Log_info("[bahnbrett] The render cycle starts.");
   bahnbrett_log_heap("entry");
 
   // Load config from NVS (merged onto defaults).
@@ -545,9 +545,9 @@ https_request_err_e bahnbrett_local_render(void)
   config.format = bahnbrett::PixelFormat::kMono1;
   config.bitmap_header_pad = bahnbrett::kBmpHeaderSize;
   ClampPanelToBuffer(&config);
-  Log_info("[bahnbrett] config: w=%d h=%d format=mono1 header_pad=%d",
+  Log_info("[bahnbrett] The render uses the size %dx%d with the mono format and a header pad of %d bytes.",
            config.width, config.height, config.bitmap_header_pad);
-  Log_info("[bahnbrett] config: provider=%s refresh_seconds=%d",
+  Log_info("[bahnbrett] The render uses the provider %s and a refresh interval of %d seconds.",
            config.provider.c_str(), config.refresh_seconds);
 
   // Easter egg is now handled earlier in bl_init(), before WiFi.
@@ -558,17 +558,20 @@ https_request_err_e bahnbrett_local_render(void)
   bahnbrett::EpochSeconds server_epoch = 0;
 
   if (WiFi.status() != WL_CONNECTED) {
-    Log_info("[bahnbrett] path=wifi-down");
+    Log_info("[bahnbrett] The WiFi is down, so the device shows the failure screen.");
     status.wifi_state = bahnbrett::RenderStatus::WifiState::kNotConnected;
     status.wifi_rssi_dbm = -100;
-    status.error_message = "WiFi unavailable";
+    // One concept keeps one wording: the dev shell prints the same sentence.
+    status.error_message =
+        "WiFi is unavailable. Check the network and restart the device.";
     RenderAndPresent(config, &data, status, server_epoch);
     return FailRender(HTTPS_UNABLE_TO_CONNECT);
   }
 
   status.wifi_state = bahnbrett::RenderStatus::WifiState::kConnected;
   status.wifi_rssi_dbm = WiFi.RSSI();
-  Log_info("[bahnbrett] path=wifi-ok rssi=%d, fetching dashboard", status.wifi_rssi_dbm);
+  Log_info("[bahnbrett] The WiFi is up with an RSSI of %d, so the device fetches the dashboard.",
+           status.wifi_rssi_dbm);
 
   // Optional: fetch remote config JSON if a URL is configured.
   {
@@ -582,8 +585,9 @@ https_request_err_e bahnbrett_local_render(void)
       if (!remote_url.isEmpty() && remote_interval > 0) {
         wakeup_count++;
         bool should_fetch = (wakeup_count >= remote_interval);
-        Log_info("[bahnbrett] remote config: url=%s interval=%d count=%d fetch=%d",
-                 remote_url.c_str(), remote_interval, wakeup_count, should_fetch ? 1 : 0);
+        Log_info("[bahnbrett] The device counts wake %d of %d for the remote config at %s and sets the fetch flag to %d.",
+                 wakeup_count, remote_interval, remote_url.c_str(),
+                 should_fetch ? 1 : 0);
 
         if (should_fetch && !HeapHasRoomForFetch("remote config")) {
           // The heap is too low for the fetch. The else path keeps the
@@ -611,13 +615,14 @@ https_request_err_e bahnbrett_local_render(void)
             bahnbrett::JsonValue root;
             if (bahnbrett::ParseJson(resp.body, &root)) {
               bahnbrett::MergeJsonIntoConfig(&config, root);
-              Log_info("[bahnbrett] remote config applied: stations=%d grid=%dx%d",
+              Log_info("[bahnbrett] The device applies the remote config with %d stations and a %dx%d grid.",
                        (int)config.station_names.size(), config.grid_cols, config.grid_rows);
             } else {
-              Log_info("[bahnbrett] remote config: JSON parse failed");
+              Log_info("[bahnbrett] The remote config is not valid JSON, so the device keeps the stored config. Check the JSON at the remote URL.");
             }
           } else {
-            Log_info("[bahnbrett] remote config: fetch failed (HTTP %d)", resp.status);
+            Log_info("[bahnbrett] The remote config fetch fails with HTTP status %d, so the device keeps the stored config. Check the remote URL and the network.",
+                     resp.status);
           }
         } else {
           // Persist incremented counter
@@ -711,9 +716,9 @@ https_request_err_e bahnbrett_local_render(void)
            report.station_lookups, report.station_lookup_failures,
            report.departure_lookups, report.departure_lookup_failures,
            static_cast<int>(report.last_failure_kind), report.last_failure_status);
-  Log_info("[bahnbrett] The fetcher returned widgets=%u", (unsigned)data.size());
+  Log_info("[bahnbrett] The fetcher returned %u widgets.", (unsigned)data.size());
   for (size_t i = 0; i < data.size(); ++i) {
-    Log_info("[bahnbrett]   widget[%u]: station_id='%s' name='%s' departures=%u",
+    Log_info("[bahnbrett] Widget %u holds the station id '%s', the name '%s', and %u departures.",
              (unsigned)i, data[i].station.id.c_str(),
              data[i].station.name.c_str(), (unsigned)data[i].departures.size());
   }
@@ -737,7 +742,8 @@ https_request_err_e bahnbrett_local_render(void)
       break;
     }
   }
-  Log_info("[bahnbrett] has_station=%d", has_station ? 1 : 0);
+  Log_info("[bahnbrett] The fetch returned a resolved station: %d.",
+           has_station ? 1 : 0);
 
   // All departure fetches failed while the station cache supplied the
   // station data. The grid would render empty, so show the failure screen
@@ -755,11 +761,11 @@ https_request_err_e bahnbrett_local_render(void)
   }
 
   if (!RenderAndPresent(config, &data, status, server_epoch)) {
-    Log_info("[bahnbrett] RenderAndPresent reported failure");
+    Log_info("[bahnbrett] The render step reports a failure.");
     return FailRender(HTTPS_REQUEST_FAILED);
   }
 
-  Log_info("[bahnbrett] bahnbrett_local_render success");
+  Log_info("[bahnbrett] The render cycle succeeds.");
   return HTTPS_SUCCESS;
 }
 

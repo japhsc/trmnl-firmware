@@ -608,7 +608,7 @@ bool g_save_body_overflow = false;
 // ---------------------------------------------------------------------------
 
 bool bahnbrett_config_web_start(void) {
-  Log_info("[bahnbrett_config] Starting config mode");
+  Log_info("[bahnbrett_config] The device starts the config mode.");
 
   g_config_saved = false;
   g_config_cancelled = false;
@@ -635,7 +635,7 @@ bool bahnbrett_config_web_start(void) {
   esp_wifi_start();
   vTaskDelay(100 / portTICK_PERIOD_MS);
 
-  Log_info("[bahnbrett_config] AP started: Bahnbrett-Config at %s", localIP.toString().c_str());
+  Log_info("[bahnbrett_config] The access point Bahnbrett-Config runs at %s.", localIP.toString().c_str());
 
   // Captive portal: DNS server that resolves everything to 10.254.0.1.
   DNSServer dnsServer;
@@ -742,7 +742,7 @@ bool bahnbrett_config_web_start(void) {
   });
 
   server.begin();
-  Log_info("[bahnbrett_config] Web server started");
+  Log_info("[bahnbrett_config] The config web server runs.");
 
   // Main loop: wait for save/cancel or 5-minute timeout.
   // Process DNS requests for captive portal behaviour.
@@ -762,10 +762,10 @@ bool bahnbrett_config_web_start(void) {
   WiFi.mode(WIFI_OFF);
 
   if (g_config_saved) {
-    Log_info("[bahnbrett_config] Config saved, will reboot to normal mode");
+    Log_info("[bahnbrett_config] The device saved the config and reboots to the normal mode.");
     return true;
   } else {
-    Log_info("[bahnbrett_config] Config cancelled or timed out, will deep sleep");
+    Log_info("[bahnbrett_config] The config mode cancelled or timed out, so the device enters the deep sleep.");
     return false;
   }
 }

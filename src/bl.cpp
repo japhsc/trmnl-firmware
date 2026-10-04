@@ -2259,7 +2259,8 @@ bool storeLogString(const char *log_buffer)
     // Use the serial-only variant to avoid infinite recursion: Log_error here
     // would route back into log_impl → handle_store_submit → logWithAction →
     // storeLogString → store fails again → ...
-    Log_error_serial("Failed to store log: %s", store_result.message);
+    Log_error_serial("The device cannot store the log entry because %s. The device keeps running without the entry.",
+                     store_result.message);
     return false;
   }
   return true;
@@ -2554,7 +2555,13 @@ void logWithAction(LogAction action, const char *message, time_t time, int line,
     case LOG_ACTION_SUBMIT_OR_STORE:
       if (!submitLogString(json_string.c_str()))
       {
-        Log_info("Was unable to send log to API; saving locally for later.");
+#ifdef BAHNBRETT_LOCAL_RENDER
+        // The Bahnbrett build makes no call to the TRMNL cloud, so the store
+        // is the destination, not a fallback; see ADR 0041.
+        Log_info("The Bahnbrett build sends no logs to the TRMNL cloud. The device stores the log entry locally.");
+#else
+        Log_info("The device cannot send the log to the API, so it stores the log entry locally for a later send.");
+#endif
         storeLogString(json_string.c_str());
       }
       break;
