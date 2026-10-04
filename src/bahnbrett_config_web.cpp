@@ -536,10 +536,16 @@ bool SaveConfigFromJson(const std::string& json_str, std::string* error) {
   config.route_filters = getStrVec("route_filters");
   config.direction_filters = getStrVec("direction_filters");
   config.mode_filters = getStrVec("mode_filters");
-  // An unknown provider name selects the default provider; see
-  // ParseProviderKind() in config.h.
-  config.provider = bahnbrett::ProviderKindName(
-      bahnbrett::ParseProviderKind(getString("provider", "transitous")));
+  // The provider vocabulary is closed; see ADR 0049. An unknown name stops
+  // the save with a clear message, so a typo cannot switch the source.
+  const std::string provider = getString("provider", "transitous");
+  if (!provider.empty() && !bahnbrett::IsValidProviderName(provider)) {
+    *error = "The provider '" + provider +
+             "' is unknown. Choose transitous, vbb, or hvv and save the config again.";
+    return false;
+  }
+  config.provider =
+      provider.empty() ? bahnbrett::kDefaultProviderName : provider;
   config.max_departures_to_fetch_per_widget = getInt("max_departures_to_fetch_per_widget", 50);
   config.api_base_url = getString("api_base_url", bahnbrett::kDefaultApiBaseUrl);
   if (config.api_base_url.empty()) {
