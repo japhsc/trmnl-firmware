@@ -63,7 +63,7 @@ static const char kConfigPageHtml[] PROGMEM = R"=====(
 <h2>Stations</h2>
 <label for="station_names">Station names (one per line)</label>
 <textarea id="station_names" rows="4"></textarea>
-<div class="hint">Enter stop names exactly as they appear on departures (e.g. "U Turmstr.")</div>
+<div class="hint">Enter stop names with the city, as they appear on departures (e.g. "U Turmstr. (Berlin)"). Short names match other cities first</div>
 
 <h2>Layout</h2>
 <label for="grid_cols">Grid columns</label>
@@ -182,6 +182,11 @@ static const char kConfigPageHtml[] PROGMEM = R"=====(
 <h2>Fetch</h2>
 <label for="max_departures_to_fetch_per_widget">Max departures to fetch per widget</label>
 <input type="number" id="max_departures_to_fetch_per_widget" min="5" max="200">
+<div class="hint">A Transitous answer measures about 2 KB per departure, so 20 entries stay under the default response cap</div>
+
+<label for="max_response_kb">Max response size (KB)</label>
+<input type="number" id="max_response_kb" min="16" max="128">
+<div class="hint">Response-body cap per request. Range 16-128. An oversized answer shrinks the departures count before it fails</div>
 
 <h2>Remote Config</h2>
 <label for="remote_config_url">Config URL (optional)</label>
@@ -255,6 +260,7 @@ function populate() {
   setVal('pinned_tls_cert', cfg.pinned_tls_cert);
   setVal('min_poll_seconds', cfg.min_poll_seconds);
   setVal('max_departures_to_fetch_per_widget', cfg.max_departures_to_fetch_per_widget);
+  setVal('max_response_kb', cfg.max_response_kb);
   setVal('remote_config_url', cfg.remote_config_url);
   setVal('remote_config_interval', cfg.remote_config_interval);
 
@@ -324,7 +330,8 @@ function getFormData() {
     hvv_base_url: document.getElementById('hvv_base_url').value.trim(),
     pinned_tls_cert: document.getElementById('pinned_tls_cert').value.trim(),
     min_poll_seconds: parseInt(document.getElementById('min_poll_seconds').value) || 60,
-    max_departures_to_fetch_per_widget: parseInt(document.getElementById('max_departures_to_fetch_per_widget').value) || 50,
+    max_departures_to_fetch_per_widget: parseInt(document.getElementById('max_departures_to_fetch_per_widget').value) || 20,
+    max_response_kb: parseInt(document.getElementById('max_response_kb').value) || 48,
     remote_config_url: document.getElementById('remote_config_url').value.trim(),
     remote_config_interval: parseInt(document.getElementById('remote_config_interval').value) || 1
   };
@@ -414,6 +421,7 @@ std::string CurrentConfigJson() {
 
   jb.KeyNumber("max_rows_per_widget", cfg.max_rows_per_widget);
   jb.KeyNumber("max_departures_to_fetch_per_widget", cfg.max_departures_to_fetch_per_widget);
+  jb.KeyNumber("max_response_kb", cfg.max_response_kb);
   jb.KeyNumber("countdown_minutes", cfg.countdown_minutes);
   jb.KeyNumber("refresh_seconds", cfg.refresh_seconds);
   jb.KeyNumber("min_poll_seconds", cfg.min_poll_seconds);
@@ -554,7 +562,8 @@ bool SaveConfigFromJson(const std::string& json_str, std::string* error) {
   }
   config.provider =
       provider.empty() ? bahnbrett::kDefaultProviderName : provider;
-  config.max_departures_to_fetch_per_widget = getInt("max_departures_to_fetch_per_widget", 50);
+  config.max_departures_to_fetch_per_widget = getInt("max_departures_to_fetch_per_widget", 20);
+  config.max_response_kb = getInt("max_response_kb", 48);
   config.api_base_url = getString("api_base_url", bahnbrett::kDefaultApiBaseUrl);
   if (config.api_base_url.empty()) {
     config.api_base_url = bahnbrett::kDefaultApiBaseUrl;

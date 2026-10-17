@@ -32,6 +32,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <algorithm>
+
 extern ApiDisplayResult apiDisplayResult;
 
 static void bahnbrett_log_heap(const char* tag) {
@@ -62,6 +64,13 @@ constexpr size_t kBahnbrettStaticBufferSize =
     static_cast<size_t>(bahnbrett::kBmpHeaderSize) +
     static_cast<size_t>(((kBahnbrettMaxWidth + 31) / 32) * 4) *
         static_cast<size_t>(kBahnbrettMaxHeight);
+
+// Returns the response-body cap in bytes that the config selects; see
+// ADR 0062.
+size_t ResponseCapBytes(const bahnbrett::DashboardConfig& config) {
+  return static_cast<size_t>(bahnbrett::EffectiveMaxResponseKb(config)) *
+         1024;
+}
 
 }  // namespace
 
@@ -233,7 +242,7 @@ void bahnbrett_render_boot_screen(void) {
   // ADR 0040.
   bahnbrett::ArduinoHttpClient http_client(
       bahnbrett::ChooseTlsMode(false, config.pinned_tls_cert),
-      config.pinned_tls_cert);
+      config.pinned_tls_cert, ResponseCapBytes(config));
   bahnbrett::ProviderSelection selection =
       bahnbrett::CreateProvider(config, http_client);
 
@@ -486,21 +495,25 @@ void ApplyRefreshInterval(const bahnbrett::DashboardConfig& config) {
 
 // The departure fetch needs room for the response body, the JSON tree, and
 // the TLS buffers. The crash log from 2026-10 shows 206 KB free at the
-// render entry with WiFi up, so a 160 KB floor keeps room for the 48 KB
+// render entry with WiFi up, so a 160 KB floor keeps room for a 48 KB
 // body cap and its parse tree while it refuses a degraded heap; see
-// ADR 0039.
-constexpr size_t kMinFreeHeapForFetchBytes = 160 * 1024;
+// ADR 0039. The floor grows with a raised response cap, so a larger cap
+// cannot pass the check and then abort during the parse; see ADR 0062.
+size_t MinFreeHeapForFetchBytes(size_t max_body_bytes) {
+  constexpr size_t kBaseFloorBytes = 160 * 1024;
+  return std::max(kBaseFloorBytes, max_body_bytes * 3);
+}
 
 // Returns true when the heap holds enough room for a fetch. The function
 // logs the numbers when it refuses, so the serial log shows the cause.
-bool HeapHasRoomForFetch(const char* what) {
+bool HeapHasRoomForFetch(const char* what, size_t max_body_bytes) {
+  const size_t floor = MinFreeHeapForFetchBytes(max_body_bytes);
   size_t free_heap = ESP.getFreeHeap();
-  if (free_heap >= kMinFreeHeapForFetchBytes) {
+  if (free_heap >= floor) {
     return true;
   }
   Log_info("[bahnbrett] The device skips the %s fetch because the free heap is %u bytes and the floor is %u bytes. Restart the device to restore the heap.",
-           what, (unsigned)free_heap,
-           (unsigned)kMinFreeHeapForFetchBytes);
+           what, (unsigned)free_heap, (unsigned)floor);
   return false;
 }
 
@@ -589,7 +602,8 @@ https_request_err_e bahnbrett_local_render(void)
                  wakeup_count, remote_interval, remote_url.c_str(),
                  should_fetch ? 1 : 0);
 
-        if (should_fetch && !HeapHasRoomForFetch("remote config")) {
+        if (should_fetch &&
+            !HeapHasRoomForFetch("remote config", ResponseCapBytes(config))) {
           // The heap is too low for the fetch. The else path keeps the
           // wakeup counter, so the next wake retries the remote config.
           should_fetch = false;
@@ -609,7 +623,7 @@ https_request_err_e bahnbrett_local_render(void)
           // certificate; see ADR 0040.
           bahnbrett::ArduinoHttpClient http_client(
               bahnbrett::ChooseTlsMode(false, config.pinned_tls_cert),
-              config.pinned_tls_cert);
+              config.pinned_tls_cert, ResponseCapBytes(config));
           bahnbrett::HttpResponse resp = http_client.Get(remote_url.c_str());
           if (resp.status == 200 && !resp.body.empty()) {
             bahnbrett::JsonValue root;
@@ -663,7 +677,7 @@ https_request_err_e bahnbrett_local_render(void)
   std::unordered_map<std::string, bahnbrett::Station> station_cache =
       LoadStationCache(provider_name);
 
-  if (!HeapHasRoomForFetch("departures")) {
+  if (!HeapHasRoomForFetch("departures", ResponseCapBytes(config))) {
     status.error_message =
         "Memory is low. Restart the device and remove stations.";
     Log_info("[bahnbrett] The device shows the failure message: %s",
@@ -678,7 +692,7 @@ https_request_err_e bahnbrett_local_render(void)
     // certificate; see ADR 0040.
     bahnbrett::ArduinoHttpClient http_client(
         bahnbrett::ChooseTlsMode(false, config.pinned_tls_cert),
-        config.pinned_tls_cert);
+        config.pinned_tls_cert, ResponseCapBytes(config));
     bahnbrett::ProviderSelection selection =
         bahnbrett::CreateProvider(config, http_client);
     if (selection.fell_back_to_default) {
