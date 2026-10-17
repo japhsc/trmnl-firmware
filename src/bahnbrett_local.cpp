@@ -651,11 +651,11 @@ https_request_err_e bahnbrett_local_render(void)
     }
   }
 
-  // The response cap of 48 KB holds about 20 stoptimes at the 2.2 KB that
-  // ADR 0034 measures per entry, so the device clamps the configured count.
-  // A busy stop returns fewer rows, and the dashboard still renders; see
-  // ADR 0039.
-  constexpr int kMaxDeparturesPerWidgetOnDevice = 20;
+  // The clamp follows the setup-form maximum: the response cap, the
+  // downshift ladder, and the fetch floor guard the memory (ADR 0062 and
+  // ADR 0063), so the count itself stops being a memory guard and a deep
+  // window config takes effect; see ADR 0064.
+  constexpr int kMaxDeparturesPerWidgetOnDevice = 200;
   if (config.max_departures_to_fetch_per_widget >
       kMaxDeparturesPerWidgetOnDevice) {
     Log_info("[bahnbrett] The device clamps the fetch count from %d to %d departures per widget.",
