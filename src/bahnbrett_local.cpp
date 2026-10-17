@@ -39,9 +39,14 @@ extern ApiDisplayResult apiDisplayResult;
 static void bahnbrett_log_heap(const char* tag) {
   size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
   size_t largest_internal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-  size_t free_total = ESP.getFreeHeap();
-  Log_info("[bahnbrett] The heap at %s holds %u bytes free in total, %u bytes internal, and a largest internal block of %u bytes.",
-           tag, (unsigned)free_total, (unsigned)free_internal, (unsigned)largest_internal);
+  // ESP.getFreeHeap() counts internal memory only in arduino-esp32 3.x,
+  // so the heap log reports the PSRAM state through its own counters; see
+  // ADR 0063.
+  size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  size_t psram_total = ESP.getPsramSize();
+  Log_info("[bahnbrett] The heap at %s holds %u bytes internal free with a largest internal block of %u bytes, and %u of %u PSRAM bytes free.",
+           tag, (unsigned)free_internal, (unsigned)largest_internal,
+           (unsigned)free_psram, (unsigned)psram_total);
 }
 
 static bool g_show_easter_egg = false;
