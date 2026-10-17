@@ -185,8 +185,8 @@ static const char kConfigPageHtml[] PROGMEM = R"=====(
 <div class="hint">A Transitous answer measures about 2 KB per departure, so 20 entries stay under the default response cap</div>
 
 <label for="max_response_kb">Max response size (KB)</label>
-<input type="number" id="max_response_kb" min="16" max="128">
-<div class="hint">Response-body cap per request. Range 16-128. An oversized answer shrinks the departures count before it fails</div>
+<input type="number" id="max_response_kb" min="16" max="512">
+<div class="hint">Response-body cap per request. Range 16-512. The body and the JSON tree land in PSRAM. An oversized answer shrinks the departures count before it fails</div>
 
 <h2>Remote Config</h2>
 <label for="remote_config_url">Config URL (optional)</label>

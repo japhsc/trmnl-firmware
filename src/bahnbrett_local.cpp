@@ -500,19 +500,15 @@ void ApplyRefreshInterval(const bahnbrett::DashboardConfig& config) {
 
 // The departure fetch needs room for the response body, the JSON tree, and
 // the TLS buffers. The crash log from 2026-10 shows 206 KB free at the
-// render entry with WiFi up, so a 160 KB floor keeps room for a 48 KB
-// body cap and its parse tree while it refuses a degraded heap; see
-// ADR 0039. The floor grows with a raised response cap, so a larger cap
-// cannot pass the check and then abort during the parse; see ADR 0062.
-size_t MinFreeHeapForFetchBytes(size_t max_body_bytes) {
-  constexpr size_t kBaseFloorBytes = 160 * 1024;
-  return std::max(kBaseFloorBytes, max_body_bytes * 3);
-}
+// render entry with WiFi up, so a 160 KB floor refuses a degraded heap;
+// see ADR 0039. The body and the JSON tree land in PSRAM, so the scaling
+// rule counts the small internal allocations only; the rule lives in the
+// core and the Linux tests cover it; see ADR 0063.
 
 // Returns true when the heap holds enough room for a fetch. The function
 // logs the numbers when it refuses, so the serial log shows the cause.
 bool HeapHasRoomForFetch(const char* what, size_t max_body_bytes) {
-  const size_t floor = MinFreeHeapForFetchBytes(max_body_bytes);
+  const size_t floor = bahnbrett::MinFreeHeapForFetchBytes(max_body_bytes);
   size_t free_heap = ESP.getFreeHeap();
   if (free_heap >= floor) {
     return true;
