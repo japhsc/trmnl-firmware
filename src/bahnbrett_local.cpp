@@ -638,8 +638,8 @@ https_request_err_e bahnbrett_local_render(void)
             bahnbrett::JsonValue root;
             if (bahnbrett::ParseJson(resp.body, &root)) {
               bahnbrett::MergeJsonIntoConfig(&config, root);
-              Log_info("[bahnbrett] The device applies the remote config with %d stations and a %dx%d grid.",
-                       (int)config.station_names.size(), config.grid_cols, config.grid_rows);
+              Log_info("[bahnbrett] The device applies the remote config with %d widgets and a %dx%d grid.",
+                       (int)config.widgets.size(), config.grid_cols, config.grid_rows);
             } else {
               Log_info("[bahnbrett] The remote config is not valid JSON, so the device keeps the stored config. Check the JSON at the remote URL.");
             }
@@ -723,13 +723,13 @@ https_request_err_e bahnbrett_local_render(void)
   }
 
   if (report.station_lookups > 0) {
-    // Keep only the stations that the config lists. This prunes entries for
-    // stations that the user removed.
+    // Keep only the stations that the widget list names. This prunes
+    // entries for stations that the user removed.
     std::unordered_map<std::string, bahnbrett::Station> current;
-    for (const auto& name : config.station_names) {
-      auto entry = station_cache.find(name);
+    for (const auto& widget : config.widgets) {
+      auto entry = station_cache.find(widget.station_name);
       if (entry != station_cache.end()) {
-        current[name] = entry->second;
+        current[widget.station_name] = entry->second;
       }
     }
     SaveStationCache(current, provider_name, config.home_city);
