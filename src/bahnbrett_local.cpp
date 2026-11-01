@@ -381,11 +381,15 @@ std::string JsonStringOf(const bahnbrett::JsonValue& object, const char* key) {
 }
 
 // Loads the persisted station cache from NVS. The function returns an empty
-// map when NVS holds no cache, the cache is older than the max age, or the
-// cache belongs to a different provider. Stop ids differ across providers,
-// so a provider switch invalidates the cache; see ADR 0034.
+// map when NVS holds no cache, the cache is older than the max age, the
+// cache belongs to a different provider, or the stored home city differs
+// from the config. Stop ids differ across providers and the lookup ranking
+// weighs the home city, so a provider or city switch invalidates the cache;
+// see ADR 0034 and ADR 0067. A cache from an older firmware carries no
+// station_city, so the device drops it once and resolves every configured
+// name again under the new ranking.
 std::unordered_map<std::string, bahnbrett::Station> LoadStationCache(
-    const std::string& provider_name) {
+    const std::string& provider_name, const std::string& home_city) {
   std::unordered_map<std::string, bahnbrett::Station> cache;
   Preferences prefs;
   if (!prefs.begin("bahnbrett", true)) {
@@ -394,11 +398,18 @@ std::unordered_map<std::string, bahnbrett::Station> LoadStationCache(
   int32_t saved_at = prefs.getInt("station_ts", 0);
   String raw = prefs.getString("station_map", "");
   String cached_provider = prefs.getString("station_prov", "");
+  String cached_city = prefs.getString("station_city", "");
   prefs.end();
 
   if (cached_provider.length() > 0 && cached_provider != provider_name.c_str()) {
     Log_info("[bahnbrett] The provider changed from %s to %s. The device drops the station cache.",
              cached_provider.c_str(), provider_name.c_str());
+    return cache;
+  }
+
+  if (cached_city != home_city.c_str()) {
+    Log_info("[bahnbrett] The home city changed from %s to %s. The device drops the station cache.",
+             cached_city.c_str(), home_city.c_str());
     return cache;
   }
 
@@ -431,10 +442,11 @@ std::unordered_map<std::string, bahnbrett::Station> LoadStationCache(
 
 // Persists the station cache to NVS. Entries without an id are skipped so
 // that a failed lookup cannot overwrite a good entry from an earlier run.
-// The provider name travels with the cache so a later wakeup can detect a
-// provider switch.
+// The provider name and the home city travel with the cache so a later
+// wakeup can detect a provider or city switch; see ADR 0067.
 void SaveStationCache(const std::unordered_map<std::string, bahnbrett::Station>& cache,
-                      const std::string& provider_name) {
+                      const std::string& provider_name,
+                      const std::string& home_city) {
   if (cache.empty()) {
     return;
   }
@@ -469,6 +481,7 @@ void SaveStationCache(const std::unordered_map<std::string, bahnbrett::Station>&
     prefs.putString("station_map", jb.str().c_str());
     prefs.putInt("station_ts", static_cast<int32_t>(now));
     prefs.putString("station_prov", provider_name.c_str());
+    prefs.putString("station_city", home_city.c_str());
     prefs.end();
     Log_info("[bahnbrett] The device stored %u resolved stations in NVS.",
              (unsigned)written);
@@ -671,7 +684,7 @@ https_request_err_e bahnbrett_local_render(void)
   const std::string provider_name =
       bahnbrett::ProviderKindName(bahnbrett::ParseProviderKind(config.provider));
   std::unordered_map<std::string, bahnbrett::Station> station_cache =
-      LoadStationCache(provider_name);
+      LoadStationCache(provider_name, config.home_city);
 
   if (!HeapHasRoomForFetch("departures", ResponseCapBytes(config))) {
     status.error_message =
@@ -719,7 +732,7 @@ https_request_err_e bahnbrett_local_render(void)
         current[name] = entry->second;
       }
     }
-    SaveStationCache(current, provider_name);
+    SaveStationCache(current, provider_name, config.home_city);
   }
 
   Log_info("[bahnbrett] The provider made %d station lookups with %d failures and %d departure lookups with %d failures. The last failure kind is %d with status %d.",
