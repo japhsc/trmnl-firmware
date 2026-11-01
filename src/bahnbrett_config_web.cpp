@@ -218,8 +218,8 @@ static const char kConfigPageHtml[] PROGMEM = R"=====(
 <script>
 var cfg = CONFIG_JSON_PLACEHOLDER;
 var filterOptions = FILTER_OPTIONS_PLACEHOLDER;
-// The MOTIS fallback serves the mode list before the first refresh wrote
-// the options cache; see ADR 0029.
+// The MOTIS fallback serves the mode list when the options cache holds no
+// entry for a station; see ADR 0029.
 var kFallbackModes = ['BUS','COACH','FERRY','HIGHSPEED_RAIL','LONG_DISTANCE','METRO','NIGHT_RAIL','REGIONAL_RAIL','SUBURBAN','SUBWAY','TRAM'];
 
 function esc(s) {

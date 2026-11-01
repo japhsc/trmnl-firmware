@@ -494,38 +494,102 @@ void SaveStationCache(const std::unordered_map<std::string, bahnbrett::Station>&
 // stays inside the 31-character SPIFFS limit; see ADR 0029.
 constexpr const char* kFilterOptionsPath = "/bahnbrett/filter_options.json";
 
+// Reads the stored filter options and keeps the raw file bytes for the
+// diff. An absent or broken file yields an empty map; see ADR 0069.
+std::unordered_map<std::string, bahnbrett::FilterOptions> LoadFilterOptions(
+    std::string* raw_out) {
+  std::unordered_map<std::string, bahnbrett::FilterOptions> stored;
+  raw_out->clear();
+  uint8_t* buffer = nullptr;
+  const size_t size =
+      filesystem_read_and_allocate(kFilterOptionsPath, &buffer);
+  if (buffer == nullptr || size == 0) {
+    free(buffer);
+    return stored;
+  }
+  raw_out->assign(reinterpret_cast<const char*>(buffer), size);
+  free(buffer);
+
+  bahnbrett::JsonValue root;
+  if (!bahnbrett::ParseJson(*raw_out, &root) ||
+      root.type != bahnbrett::JsonValue::Type::kObject) {
+    return stored;
+  }
+  for (const auto& entry : root.object) {
+    if (entry.second.type != bahnbrett::JsonValue::Type::kObject) {
+      continue;
+    }
+    bahnbrett::FilterOptions options;
+    auto ReadList = [&](const char* key, std::vector<std::string>* list) {
+      const bahnbrett::JsonValue* value = entry.second.Find(key);
+      if (!value || value->type != bahnbrett::JsonValue::Type::kArray) {
+        return;
+      }
+      for (const auto& item : value->array) {
+        if (item.type == bahnbrett::JsonValue::Type::kString) {
+          list->push_back(item.string_value);
+        }
+      }
+    };
+    ReadList("modes", &options.modes);
+    ReadList("lines", &options.lines);
+    ReadList("directions", &options.directions);
+    stored[entry.first] = std::move(options);
+  }
+  return stored;
+}
+
 // Writes the filter options of the fetched widgets to the flash file
 // system. The file carries one entry per configured station name, so the
 // config editor can offer the observed lines, modes, and directions. The
-// device writes the file only when the derived content differs, so a short
-// refresh interval cannot wear the flash; see ADR 0029.
+// options form a sticky union: every fresh window merges into the stored
+// entry, an entry sticks once seen, and the file keeps only the configured
+// stations. The device writes the file only when the merged content
+// differs, so a short refresh interval cannot wear the flash; see ADR 0029
+// and ADR 0069.
 void SaveFilterOptions(const bahnbrett::DashboardConfig& config,
                        const std::vector<bahnbrett::WidgetData>& data) {
+  std::string stored_raw;
+  std::unordered_map<std::string, bahnbrett::FilterOptions> stored =
+      LoadFilterOptions(&stored_raw);
+
   bahnbrett::JsonBuilder jb;
   jb.StartObject();
   size_t written = 0;
   for (size_t i = 0; i < config.widgets.size() && i < data.size(); ++i) {
-    const bahnbrett::FilterOptions options =
+    const std::string& station = config.widgets[i].station_name;
+    const bahnbrett::FilterOptions observed =
         bahnbrett::DeriveFilterOptions(data[i]);
-    if (options.modes.empty() && options.lines.empty() &&
-        options.directions.empty()) {
+    const auto entry = stored.find(station);
+    // A widget with an empty window keeps its stored entry, so a failed
+    // cycle cannot drop the sticky options.
+    const bool nothing_stored = entry == stored.end();
+    if (nothing_stored && observed.modes.empty() && observed.lines.empty() &&
+        observed.directions.empty()) {
       continue;
     }
-    jb.Key(config.widgets[i].station_name);
+    bahnbrett::FilterOptions merged;
+    if (!nothing_stored) {
+      merged = bahnbrett::MergeFilterOptions(entry->second, observed);
+    } else {
+      merged = observed;
+    }
+
+    jb.Key(station);
     jb.StartObject();
     auto WriteList = [&](const char* key,
                          const std::vector<std::string>& entries) {
       jb.Key(key);
       jb.StartArray();
-      for (const auto& entry : entries) {
-        jb.String(entry);
+      for (const auto& item : entries) {
+        jb.String(item);
       }
       jb.EndArray();
       jb.Comma();
     };
-    WriteList("modes", options.modes);
-    WriteList("lines", options.lines);
-    WriteList("directions", options.directions);
+    WriteList("modes", merged.modes);
+    WriteList("lines", merged.lines);
+    WriteList("directions", merged.directions);
     jb.EndObject();
     jb.Comma();
     ++written;
@@ -535,16 +599,9 @@ void SaveFilterOptions(const bahnbrett::DashboardConfig& config,
     return;
   }
   const std::string content = jb.str();
-
-  // A stored file with the same content skips the write.
-  uint8_t* stored = nullptr;
-  const size_t stored_size =
-      filesystem_read_and_allocate(kFilterOptionsPath, &stored);
-  const bool unchanged =
-      stored != nullptr && stored_size == content.size() &&
-      memcmp(stored, content.data(), stored_size) == 0;
-  free(stored);
-  if (unchanged) {
+  if (content == stored_raw) {
+    // The merged content matches the stored file, so the device skips the
+    // write and spares the flash.
     return;
   }
 
