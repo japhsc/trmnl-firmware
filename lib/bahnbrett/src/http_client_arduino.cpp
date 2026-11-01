@@ -3,7 +3,10 @@
 // direct framework includes let the PlatformIO dependency finder link the
 // framework libraries to this library, because the real http_client.h
 // lives outside this tree and the finder cannot follow it.
-#if defined(ARDUINO)
+// The BAHNBRETT_TRMNL half of the guard matches the core's device files:
+// the stock environments reach this library through the LDF but carry no
+// -I../../include, so the include below cannot resolve there.
+#if defined(ARDUINO) && defined(BAHNBRETT_TRMNL)
 
 #include <HTTPClient.h>
 #include <Stream.h>
@@ -11,4 +14,4 @@
 
 #include "../../../../../src/http_client_arduino.cpp"
 
-#endif  // ARDUINO
+#endif  // ARDUINO && BAHNBRETT_TRMNL
