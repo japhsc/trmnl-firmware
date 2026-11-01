@@ -84,6 +84,11 @@ void goToSleep(void) {
 #elif defined(CONFIG_IDF_TARGET_ESP32S3)
 #ifdef BOARD_TRMNL_X
   esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_INTERRUPT, 0);
+#elif defined(BOARD_XIAO_EPAPER_DISPLAY) || defined(BOARD_XIAO_EPAPER_DISPLAY_3CLR)
+  // The XIAO boards wake through any of their three keys; pins_init()
+  // configures the same pins as inputs. KEY3 is the interrupt pin that
+  // the device table holds.
+  esp_sleep_enable_ext1_wakeup((1ULL << PIN_KEY1) | (1ULL << PIN_KEY2) | (1ULL << PIN_KEY3), ESP_EXT1_WAKEUP_ANY_LOW);
 #else
   esp_sleep_enable_ext0_wakeup((gpio_num_t)pDevice->interrupt_pin, 0);
 #endif

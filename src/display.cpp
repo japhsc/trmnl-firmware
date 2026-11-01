@@ -91,7 +91,9 @@ bool display_update_epaper(int refreshMode, bool wait, bool writePlane, uint8_t 
   } else {
     Log_info("Have valid previous image in EPD memory, doing partial refresh");
   }
+  uint32_t refresh_start_ms = millis();
   bbep.refresh(refreshMode, wait);
+  Log_info("[display] refresh took %lu ms (opTime=%d)", (unsigned long)(millis() - refresh_start_ms), bbep.opTime());
     // The next update can be a partial update because the current is 1-bpp and stays in the EPD RAM
   bCanDoPartial = (bbep.getPanelType() == dpList[pDevice->panel_set][iTempProfile].OneBit);
   return true;
@@ -306,6 +308,7 @@ static bool draw_image(uint8_t *image_buffer, int data_size, int *pRefreshMode, 
   {
     if (*(uint16_t *)image_buffer == BB_BITMAP_MARKER) {
             // G5 compressed image
+      Log_info("Drawing Group5 image");
       BB_BITMAP *pBBB = (BB_BITMAP *)image_buffer;
 #ifdef BB_EPAPER
       bbep.setMemoryMode(BB_MODE_1BPP); // use 1-bit mode to save memory
@@ -330,6 +333,7 @@ static bool draw_image(uint8_t *image_buffer, int data_size, int *pRefreshMode, 
                                 DISPLAY_BATTERY_ICON_MARGIN);
 #endif // BOARD_TRMNL_X
     } else {
+      Log_info("Drawing BMP image");
          // This work-around is due to a lack of RAM; the correct method would be to use loadBMP()
       const int iBmpWidth = image_buffer[18] | (image_buffer[19] << 8);
       const int iBmpHeight = image_buffer[22] | (image_buffer[23] << 8);
@@ -345,7 +349,10 @@ static bool draw_image(uint8_t *image_buffer, int data_size, int *pRefreshMode, 
     bbep.writePlane(); // send image data to the EPD (converting it if needed to 4/6-clr)
     iRefreshMode = REFRESH_PARTIAL;
 #endif // BB_EPAPER
-    iUpdateCount = 1; // use partial update
+    // Do not reset iUpdateCount here: choose_refresh_mode() forces a full
+    // refresh every 8 partial updates, and a reset on every BMP would keep
+    // the counter at 1, so the panel would never get its cleaning full
+    // refresh on the BMP path.
   }
   *pRefreshMode = iRefreshMode;
   *pAlloc = bAlloc;

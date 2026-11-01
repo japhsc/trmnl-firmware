@@ -11,6 +11,10 @@
 
 #include "trmnl_log.h"
 
+#ifdef BAHNBRETT_LOCAL_RENDER
+#include <bahnbrett_local.h>
+#endif
+
 static unsigned long wait_for_button_release(unsigned long start_time) {
   pinMode(pDevice->interrupt_pin, INPUT);
   while (digitalRead(pDevice->interrupt_pin) == LOW && millis() - start_time < BUTTON_SOFT_RESET_TIME) {
@@ -47,6 +51,25 @@ static ButtonPressResult wait_for_second_press(unsigned long start_time) {
       ButtonPressResult long_press_result = classify_press_duration(second_duration);
       if (long_press_result != NoAction) {
         return long_press_result;
+      }
+
+      // Second press confirmed. Check for a third press to distinguish
+      // double-click from triple-click.
+      auto second_release_time = millis();
+      while (millis() - second_release_time < BUTTON_DOUBLE_CLICK_WINDOW) {
+        if (digitalRead(pDevice->interrupt_pin) == LOW) {
+          auto third_press_start = millis();
+          auto third_duration = wait_for_button_release(third_press_start);
+
+          ButtonPressResult third_long = classify_press_duration(third_duration);
+          if (third_long != NoAction) {
+            return third_long;
+          }
+
+          Log_info("Button time=%lu detected triple-click", millis() - start_time);
+          return TripleClick;
+        }
+        delay(10);
       }
 
       Log_info("Button time=%lu detected double-click", millis() - start_time);
@@ -109,7 +132,19 @@ bool button_wake_act(ButtonPressResult button) {
     WifiCaptivePortal.resetSettings();
     break;
   case DoubleClick:
+#ifdef BAHNBRETT_LOCAL_RENDER
+    // The Bahnbrett build owns the double click: it renders the easter
+    // egg. The server-assigned special function never applies, because
+    // the build makes no call to the TRMNL cloud; see ADR 0041.
+    bahnbrett_trigger_easter_egg();
+#else
     double_click = true;
+#endif
+    break;
+  case TripleClick:
+#ifdef BAHNBRETT_LOCAL_RENDER
+    g_bahnbrett_config_mode = true;
+#endif
     break;
   case ShortPress:
   case NoAction:

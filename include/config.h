@@ -3,8 +3,8 @@
 #include <stdint.h>
 
 #define FW_MAJOR_VERSION 1
-#define FW_MINOR_VERSION 8
-#define FW_PATCH_VERSION 19
+#define FW_MINOR_VERSION 9
+#define FW_PATCH_VERSION 0
 
 // Helper macros for stringification
 #define STRINGIFY(x)     #x
@@ -121,6 +121,15 @@
 #define PIN_BATTERY 0
 #else
 #define PIN_BATTERY 3
+#endif
+
+// The XIAO ePaper boards carry three keys. KEY3 is the interrupt pin that
+// the device table holds (pDevice->interrupt_pin). The wake handling in
+// wake_init.cpp and the EXT1 mask in goToSleep() read these defines.
+#if defined(BOARD_XIAO_EPAPER_DISPLAY) || defined(BOARD_XIAO_EPAPER_DISPLAY_3CLR)
+#define PIN_KEY1 2 // KEY1 — silkscreen label
+#define PIN_KEY2 3 // KEY2 — silkscreen label
+#define PIN_KEY3 5 // KEY3 — silkscreen label (primary wake/interrupt pin)
 #endif
 
 // #define FAKE_BATTERY_VOLTAGE // Uncomment to report 4.2V instead of reading ADC

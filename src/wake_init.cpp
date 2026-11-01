@@ -2,6 +2,7 @@
 #include <ArduinoLog.h>
 #include <WifiCaptive.h>
 #include <battery.h>
+#include <bl.h>
 #include <board_config.h>
 #include <button.h>
 #include <display.h>
@@ -18,6 +19,10 @@
 #include <wake_init.h>
 
 #include "messages.h"
+
+#ifdef BAHNBRETT_LOCAL_RENDER
+#include <bahnbrett_local.h>
+#endif
 
 #ifdef BOARD_TRMNL_X
 #include <Wire.h>
@@ -114,9 +119,59 @@ void startBoardHardware(const WakeContext &wake, uint32_t init_time) {
   bool double_click = false;
   if (wake.gpio) {
     Log_info("GPIO wakeup detected (%d)", wake.reason);
+#if defined(BOARD_XIAO_EPAPER_DISPLAY) || defined(BOARD_XIAO_EPAPER_DISPLAY_3CLR)
+    // The XIAO boards wake through EXT1 with three keys, so the wake
+    // status tells the keys apart; see PIN_KEY1..3 in config.h. The
+    // single-key read_button_presses() path cannot distinguish them.
+    if (wake.reason == ESP_SLEEP_WAKEUP_EXT1) {
+      uint64_t wake_status = esp_sleep_get_ext1_wakeup_status();
+      Log_info("GPIO wakeup detected (EXT1), status=0x%llx", wake_status);
+
+      // Wait for pressed button to be released and measure hold duration.
+      // If the button was a quick tap (already released), duration is ~0.
+      auto wait_for_release = [](int pin) -> unsigned long {
+        unsigned long start = millis();
+        while (digitalRead(pin) == LOW && (millis() - start) < BUTTON_SOFT_RESET_TIME) {
+          delay(10);
+        }
+        return millis() - start;
+      };
+
+      if (wake_status & (1ULL << PIN_KEY1)) {
+        Log_info("KEY1 pressed — easter egg");
+        wait_for_release(PIN_KEY1);
+#ifdef BAHNBRETT_LOCAL_RENDER
+        bahnbrett_trigger_easter_egg();
+#endif
+      } else if (wake_status & (1ULL << PIN_KEY2)) {
+        Log_info("KEY2 pressed — config mode");
+        wait_for_release(PIN_KEY2);
+#ifdef BAHNBRETT_LOCAL_RENDER
+        g_bahnbrett_config_mode = true;
+#endif
+      } else if (wake_status & (1ULL << PIN_KEY3)) {
+        unsigned long hold_duration = wait_for_release(PIN_KEY3);
+        Log_info("KEY3 hold duration=%lu ms", hold_duration);
+        if (hold_duration >= BUTTON_SOFT_RESET_TIME) {
+          Log_info("KEY3 extra-long press — factory reset");
+          resetDeviceCredentials();
+        } else if (hold_duration > BUTTON_HOLD_TIME) {
+          Log_info("KEY3 long press — WiFi reset");
+          WifiCaptivePortal.resetSettings();
+        }
+        // short press = default wake, no special action
+      }
+
+      Log_info("button handling end");
+    } else {
+      wait_for_serial();
+      Log_info("Non-GPIO wakeup (%d) -> didn't read buttons", wake.reason);
+    }
+#else
     ButtonPressResult button = read_button_presses();
     wait_for_serial();
     double_click = button_wake_act(button);
+#endif
   } else {
     wait_for_serial();
     Log_info("Non-GPIO wakeup (%d) -> didn't read buttons", wake.reason);

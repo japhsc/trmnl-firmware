@@ -23,6 +23,11 @@ enum LogAction { LOG_ACTION_STORE, LOG_ACTION_SUBMIT, LOG_ACTION_SUBMIT_OR_STORE
  * @return bool true if successful, false if failed
  */
 static bool submitLogString(const char *log_buffer) {
+#ifdef BAHNBRETT_LOCAL_RENDER
+  // The Bahnbrett build makes no call to the TRMNL cloud; see ADR 0041.
+  // The caller stores the log locally when this function reports failure.
+  return false;
+#endif
   String api_key = "";
   if (preferences.isKey(PREFERENCES_API_KEY)) {
     api_key = preferences.getString(PREFERENCES_API_KEY, PREFERENCES_API_KEY_DEFAULT);
@@ -54,6 +59,12 @@ static bool storeLogString(const char *log_buffer) {
 }
 
 void submitStoredLogs(void) {
+#ifdef BAHNBRETT_LOCAL_RENDER
+  // The Bahnbrett build renders locally and needs no TRMNL cloud account.
+  // The device never submits stored logs; see ADR 0041. The store stays a
+  // bounded ring, so the entries rotate out without a drain.
+  return;
+#endif
   if (WiFi.isConnected() == false) {
     Log_info("WiFi not connected; not submitting stored logs.");
     return;
@@ -128,7 +139,13 @@ static void logWithAction(LogAction action, LogLevel level, const char *message,
     break;
   case LOG_ACTION_SUBMIT_OR_STORE:
     if (!submitLogString(json_string.c_str())) {
+#ifdef BAHNBRETT_LOCAL_RENDER
+      // The Bahnbrett build makes no call to the TRMNL cloud, so the store
+      // is the destination, not a fallback; see ADR 0041.
+      Log_info("The Bahnbrett build sends no logs to the TRMNL cloud. The device stores the log entry locally.");
+#else
       Log_info("Was unable to send log to API; saving locally for later.");
+#endif
       storeLogString(json_string.c_str());
     }
     break;

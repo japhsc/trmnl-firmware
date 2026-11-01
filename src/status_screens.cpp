@@ -6,6 +6,10 @@
 #include <status_screens.h>
 #include <trmnl_log.h>
 
+#ifdef BAHNBRETT_LOCAL_RENDER
+#include <bahnbrett_local.h>
+#endif
+
 #include "displayed_image.h"
 #include "esp_flash.h"
 #include "loading.h"
@@ -88,7 +92,22 @@ void showWakeLogo(void) {
     showMessageWithLogo(NONE);
   }
 #else
+#ifdef BAHNBRETT_LOCAL_RENDER
+  // The Bahnbrett build replaces the stock logo flash with its own boot
+  // screen. The screen carries the departure-data attribution; the
+  // dashboard shows no footer; see ADR 0038. The screen shows on the
+  // first boot only: PREFERENCES_DEVICE_REGISTERED_KEY exists after the
+  // first boot, because the tail below writes it.
+  // storedLogoOrDefault() forces a full refresh for panels with unknown
+  // update-mode support. The Bahnbrett branch skips that call, so set the
+  // flag here and keep the same caution.
+  if (!preferences.isKey(PREFERENCES_DEVICE_REGISTERED_KEY)) {
+    apiDisplayResult.response.maximum_compatibility = true;
+    bahnbrett_render_boot_screen();
+  }
+#else
   display_show_image(storedLogoOrDefault(1), DEFAULT_IMAGE_SIZE, false, true);
+#endif
 #endif // BOARD_TRMNL_X
   // Force the display to show the current playlist image after the loading screen
   // (even if it hasn't changed)
