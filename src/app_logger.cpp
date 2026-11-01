@@ -175,7 +175,10 @@ bool get_verbose_logging() { return serial_logging_enabled; }
 
 // Uses its own handle, so it works before openPreferences() and from the portal's web server
 bool read_verbose_logging() {
-#ifdef DEV_FIRMWARE
+// The Bahnbrett build keeps the serial logs on by default: the pre-rebase
+// build always logged, and the device diagnosis reads the serial output.
+// A stored verbose_log entry still overrides the default.
+#if defined(DEV_FIRMWARE) || defined(BAHNBRETT_LOCAL_RENDER)
   bool enabled = true;
 #else
   bool enabled = false;
