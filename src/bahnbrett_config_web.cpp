@@ -11,18 +11,24 @@
 #include <ESPAsyncWebServer.h>
 #include <trmnl_log.h>
 
+#include <filesystem.h>
+
 #include <bahnbrett/config.h>
 #include <bahnbrett/config_store.h>
 #include <bahnbrett/json.h>
 #include <bahnbrett/types.h>
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
 // ---------------------------------------------------------------------------
 // HTML template for the config editor.
-// {{CONFIG_JSON}} is replaced server-side with the current config as JSON.
+// CONFIG_JSON_PLACEHOLDER is replaced server-side with the current config
+// as JSON. FILTER_OPTIONS_PLACEHOLDER is replaced with the cached filter
+// options; see ADR 0042 and ADR 0029.
 // ---------------------------------------------------------------------------
 static const char kConfigPageHtml[] PROGMEM = R"=====(
 <!DOCTYPE html>
@@ -50,6 +56,14 @@ static const char kConfigPageHtml[] PROGMEM = R"=====(
   button{flex:1;padding:12px;border:none;border-radius:6px;font-size:16px;font-weight:600;cursor:pointer}
   .btn-save{background:#e94560;color:#fff}
   .btn-cancel{background:#333;color:#ccc}
+  .btn-add{background:#2a2a4a;color:#ccc;font-size:13px;padding:8px 16px}
+  .btn-remove{background:#5c1a1a;color:#ddd;font-size:12px;padding:6px 12px}
+  details.widget{border:1px solid #333;border-radius:6px;margin:8px 0;padding:4px 10px}
+  details.widget>summary{cursor:pointer;font-weight:600;padding:6px 0}
+  details.widget details{margin:6px 0}
+  details.widget details>summary{cursor:pointer;color:#aaa;font-size:13px}
+  .mode-list{display:flex;flex-wrap:wrap;gap:4px 12px;margin:4px 0}
+  .mode-list .check-row{margin:2px 0}
   .status{display:none;padding:12px;border-radius:6px;margin-bottom:16px;text-align:center}
   .status-ok{background:#1b5e20;color:#a5d6a7}
   .status-err{background:#b71c1c;color:#ef9a9a}
@@ -60,10 +74,11 @@ static const char kConfigPageHtml[] PROGMEM = R"=====(
 <div id="status" class="status"></div>
 
 <form id="cfg-form">
-<h2>Stations</h2>
-<label for="station_names">Station names (one per line)</label>
-<textarea id="station_names" rows="4"></textarea>
-<div class="hint">Enter stop names with the city, as they appear on departures (e.g. "U Turmstr. (Berlin)"). Short names match other cities first</div>
+<h2>Widgets</h2>
+<div id="widget-list"></div>
+<div id="option-lists"></div>
+<button type="button" class="btn-add" onclick="addWidget()">Add station</button>
+<div class="hint">One widget per station, each with its own filters. A short name resolves to the home city below.</div>
 
 <h2>Layout</h2>
 <label for="grid_cols">Grid columns</label>
@@ -130,21 +145,6 @@ static const char kConfigPageHtml[] PROGMEM = R"=====(
 
 <label for="home_city">Home city</label>
 <input type="text" id="home_city">
-
-<h2>Filters</h2>
-<label for="line_filters">Line filters (one per line, empty = all)</label>
-<textarea id="line_filters" rows="2"></textarea>
-<div class="hint">e.g. "U2", "S5"</div>
-
-<label for="route_filters">Route filters (one per line, empty = all)</label>
-<textarea id="route_filters" rows="2"></textarea>
-
-<label for="direction_filters">Direction filters (one per line, empty = all)</label>
-<textarea id="direction_filters" rows="2"></textarea>
-
-<label for="mode_filters">Mode filters (one per line, empty = all)</label>
-<textarea id="mode_filters" rows="2"></textarea>
-<div class="hint">Transit modes, e.g. "SUBURBAN", "SUBWAY", "BUS", "REGIONAL_RAIL"</div>
 
 <h2>Data Source</h2>
 <label for="provider">Departures provider</label>
@@ -217,6 +217,102 @@ static const char kConfigPageHtml[] PROGMEM = R"=====(
 
 <script>
 var cfg = CONFIG_JSON_PLACEHOLDER;
+var filterOptions = FILTER_OPTIONS_PLACEHOLDER;
+// The MOTIS fallback serves the mode list before the first refresh wrote
+// the options cache; see ADR 0029.
+var kFallbackModes = ['BUS','COACH','FERRY','HIGHSPEED_RAIL','LONG_DISTANCE','METRO','NIGHT_RAIL','REGIONAL_RAIL','SUBURBAN','SUBWAY','TRAM'];
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+}
+
+function optionEntry(station) {
+  if (!filterOptions) return null;
+  return filterOptions[station] || null;
+}
+
+function optionUnion(key) {
+  var out = [];
+  if (!filterOptions) return out;
+  for (var s in filterOptions) {
+    var list = (filterOptions[s] || {})[key] || [];
+    for (var i = 0; i < list.length; ++i)
+      if (out.indexOf(list[i]) < 0) out.push(list[i]);
+  }
+  out.sort();
+  return out;
+}
+
+function buildDatalists() {
+  var mk = function(id, values) {
+    var h = '<datalist id="' + id + '">';
+    for (var i = 0; i < values.length; ++i) h += '<option value="' + esc(values[i]) + '">';
+    return h + '</datalist>';
+  };
+  var holder = document.getElementById('option-lists');
+  if (holder) holder.innerHTML = mk('opt-lines', optionUnion('lines')) +
+                                  mk('opt-directions', optionUnion('directions'));
+}
+
+function denyBox(id, checked) {
+  return '<div class="check-row"><input type="checkbox" id="' + id + '"' + (checked ? ' checked' : '') +
+         '><label for="' + id + '">Deny list (unchecked = allow)</label></div>';
+}
+
+function widgetSection(i, w) {
+  w = w || {};
+  var title = (w.station || '').trim() || ('Station ' + (i + 1));
+  var entry = optionEntry(w.station);
+  var modeList = entry && entry.modes && entry.modes.length ? entry.modes : kFallbackModes;
+  var checks = '';
+  for (var j = 0; j < modeList.length; ++j) {
+    var m = modeList[j];
+    var on = (w.modes || []).indexOf(m) >= 0;
+    checks += '<div class="check-row"><input type="checkbox" id="w' + i + '_mode_' + j +
+              '" data-mode="' + esc(m) + '"' + (on ? ' checked' : '') +
+              '><label for="w' + i + '_mode_' + j + '">' + esc(m) + '</label></div>';
+  }
+  var sub = function(name, list, denyId, taId, datalist, hint) {
+    return '<details' + (list && list.length ? ' open' : '') + '><summary>' + name + '</summary>' +
+           denyBox(denyId, !!w[denyId]) +
+           '<textarea id="' + taId + '" rows="2" list="' + datalist + '">' +
+           esc((list || []).join('\n')) + '</textarea>' +
+           '<div class="hint">' + hint + '</div></details>';
+  };
+  return '<details class="widget" open><summary>' + esc(title) + '</summary>' +
+         '<label for="w' + i + '_station">Station name</label>' +
+         '<input type="text" id="w' + i + '_station" value="' + esc(w.station || '') + '">' +
+         sub('Lines', w.lines, 'w' + i + '_lines_deny', 'w' + i + '_lines', 'opt-lines',
+             'One per line. A trailing * means prefix match, e.g. "ICE*".') +
+         '<details' + ((w.modes || []).length ? ' open' : '') + '><summary>Modes</summary>' +
+         denyBox('w' + i + '_modes_deny', !!w.modes_deny) +
+         '<div class="mode-list">' + checks + '</div></details>' +
+         sub('Directions', w.directions, 'w' + i + '_directions_deny', 'w' + i + '_directions',
+             'opt-directions', 'Substring match, one per line, e.g. "Pankow".') +
+         '<button type="button" class="btn-remove" onclick="removeWidget(' + i + ')">Remove</button>' +
+         '</details>';
+}
+
+function renderWidgets() {
+  var list = document.getElementById('widget-list');
+  if (!list) return;
+  var html = '';
+  for (var i = 0; i < cfg.widgets.length; ++i) html += widgetSection(i, cfg.widgets[i]);
+  list.innerHTML = html;
+}
+
+function addWidget() {
+  cfg.widgets.push({station: '', lines: [], lines_deny: false,
+                    modes: [], modes_deny: false,
+                    directions: [], directions_deny: false});
+  renderWidgets();
+}
+
+function removeWidget(i) {
+  if (!confirm('Remove this station widget?')) return;
+  cfg.widgets.splice(i, 1);
+  renderWidgets();
+}
 
 function populate() {
   var setVal = function(id, val) {
@@ -226,11 +322,7 @@ function populate() {
     else if (el.type === 'range') { el.value = val; updateRange(id + '_val', val); }
     else el.value = val !== undefined && val !== null ? val : '';
   };
-  var setLines = function(id, arr) {
-    setVal(id, Array.isArray(arr) ? arr.join('\n') : '');
-  };
 
-  setLines('station_names', cfg.station_names);
   setVal('grid_cols', cfg.grid_cols);
   setVal('grid_rows', cfg.grid_rows);
   setVal('col_width_ratios', Array.isArray(cfg.col_width_ratios) ? cfg.col_width_ratios.join(',') : '');
@@ -247,10 +339,6 @@ function populate() {
   setVal('show_delays', cfg.show_delays);
   setVal('timezone', cfg.timezone);
   setVal('home_city', cfg.home_city);
-  setLines('line_filters', cfg.line_filters);
-  setLines('route_filters', cfg.route_filters);
-  setLines('direction_filters', cfg.direction_filters);
-  setLines('mode_filters', cfg.mode_filters);
   setVal('provider', cfg.provider || 'transitous');
   setVal('transitous_base_url', cfg.transitous_base_url);
   setVal('api_base_url', cfg.api_base_url);
@@ -266,6 +354,9 @@ function populate() {
 
   updateRange('header_font_scale_val', cfg.header_font_scale);
   updateRange('widget_font_scale_val', cfg.widget_font_scale);
+
+  buildDatalists();
+  renderWidgets();
 }
 
 function updateRange(spanId, val) {
@@ -300,8 +391,28 @@ function getFormData() {
     var v = document.getElementById(id).value.trim();
     return v ? v.split('\n').map(function(s){return s.trim()}).filter(function(s){return s}) : [];
   };
+  // Collect one widget per rendered section. The server skips a widget
+  // without a station name.
+  var widgets = [];
+  var sections = document.querySelectorAll('details.widget');
+  for (var i = 0; i < sections.length; ++i) {
+    var station = document.getElementById('w' + i + '_station').value.trim();
+    if (!station) continue;
+    var modes = [];
+    var boxes = sections[i].querySelectorAll('input[data-mode]');
+    for (var j = 0; j < boxes.length; ++j) if (boxes[j].checked) modes.push(boxes[j].getAttribute('data-mode'));
+    widgets.push({
+      station: station,
+      lines: getLines('w' + i + '_lines'),
+      lines_deny: document.getElementById('w' + i + '_lines_deny').checked,
+      modes: modes,
+      modes_deny: document.getElementById('w' + i + '_modes_deny').checked,
+      directions: getLines('w' + i + '_directions'),
+      directions_deny: document.getElementById('w' + i + '_directions_deny').checked
+    });
+  }
   return {
-    station_names: getLines('station_names'),
+    widgets: widgets,
     grid_cols: parseInt(document.getElementById('grid_cols').value) || 0,
     grid_rows: parseInt(document.getElementById('grid_rows').value) || 0,
     col_width_ratios: parseRatios(document.getElementById('col_width_ratios').value),
@@ -318,10 +429,6 @@ function getFormData() {
     show_delays: document.getElementById('show_delays').checked,
     timezone: document.getElementById('timezone').value.trim() || 'CET-1CEST,M3.5.0,M10.5.0/3',
     home_city: document.getElementById('home_city').value.trim() || 'Berlin',
-    line_filters: getLines('line_filters'),
-    route_filters: getLines('route_filters'),
-    direction_filters: getLines('direction_filters'),
-    mode_filters: getLines('mode_filters'),
     provider: document.getElementById('provider').value,
     transitous_base_url: document.getElementById('transitous_base_url').value.trim(),
     api_base_url: document.getElementById('api_base_url').value.trim() || 'https://v6.vbb.transport.rest',
@@ -435,11 +542,23 @@ std::string CurrentConfigJson() {
   jb.KeyString("hvv_user", cfg.hvv_user);
   jb.KeyString("hvv_key", cfg.hvv_key);
   jb.KeyString("pinned_tls_cert", cfg.pinned_tls_cert);
-  WriteStrVec("station_names", cfg.station_names);
-  WriteStrVec("line_filters", cfg.line_filters);
-  WriteStrVec("route_filters", cfg.route_filters);
-  WriteStrVec("direction_filters", cfg.direction_filters);
-  WriteStrVec("mode_filters", cfg.mode_filters);
+  // The widget list carries the per-widget filters; see ADR 0029.
+  jb.Key("widgets");
+  jb.StartArray();
+  for (const auto& widget : cfg.widgets) {
+    jb.StartObject();
+    jb.KeyString("station", widget.station_name);
+    WriteStrVec("lines", widget.filter.lines);
+    jb.KeyBool("lines_deny", widget.filter.lines_is_deny);
+    WriteStrVec("modes", widget.filter.modes);
+    jb.KeyBool("modes_deny", widget.filter.modes_is_deny);
+    WriteStrVec("directions", widget.filter.directions);
+    jb.KeyBool("directions_deny", widget.filter.directions_is_deny);
+    jb.EndObject();
+    jb.Comma();
+  }
+  jb.EndArray();
+  jb.Comma();
   jb.KeyBool("aggregate_by_destination", cfg.aggregate_by_destination);
   jb.KeyNumber("max_departures_per_group", cfg.max_departures_per_group);
   jb.KeyNumber("min_departure_minutes", cfg.min_departure_minutes);
@@ -502,18 +621,6 @@ bool SaveConfigFromJson(const std::string& json_str, std::string* error) {
     const auto* v = root.Find(key);
     return (v && v->type == bahnbrett::JsonValue::Type::kString) ? v->string_value : fallback;
   };
-  auto getStrVec = [&](const char* key) -> std::vector<std::string> {
-    const auto* v = root.Find(key);
-    std::vector<std::string> out;
-    if (v && v->type == bahnbrett::JsonValue::Type::kArray) {
-      for (const auto& item : v->array) {
-        if (item.type == bahnbrett::JsonValue::Type::kString) {
-          out.push_back(item.string_value);
-        }
-      }
-    }
-    return out;
-  };
   auto getIntVec = [&](const char* key) -> std::vector<int> {
     const auto* v = root.Find(key);
     std::vector<int> out;
@@ -527,9 +634,18 @@ bool SaveConfigFromJson(const std::string& json_str, std::string* error) {
     return out;
   };
 
-  config.station_names = getStrVec("station_names");
-  if (config.station_names.empty()) {
-    config.station_names = bahnbrett::DefaultDashboardConfig().station_names;
+  // The widget list replaces the station and filter fields; see ADR 0029.
+  // An empty list keeps the default stations, so a cleared form cannot
+  // brick the device.
+  {
+    const auto* widgets_value = root.Find("widgets");
+    if (widgets_value &&
+        widgets_value->type == bahnbrett::JsonValue::Type::kArray) {
+      config.widgets = bahnbrett::ParseWidgetArray(*widgets_value);
+    }
+    if (config.widgets.empty()) {
+      config.widgets = bahnbrett::DefaultDashboardConfig().widgets;
+    }
   }
   config.grid_cols = getInt("grid_cols", 0);
   config.grid_rows = getInt("grid_rows", 0);
@@ -548,10 +664,6 @@ bool SaveConfigFromJson(const std::string& json_str, std::string* error) {
   config.show_delays = getBool("show_delays", true);
   config.timezone = getString("timezone", "CET-1CEST,M3.5.0,M10.5.0/3");
   config.home_city = getString("home_city", "Berlin");
-  config.line_filters = getStrVec("line_filters");
-  config.route_filters = getStrVec("route_filters");
-  config.direction_filters = getStrVec("direction_filters");
-  config.mode_filters = getStrVec("mode_filters");
   // The provider vocabulary is closed; see ADR 0049. An unknown name stops
   // the save with a clear message, so a typo cannot switch the source.
   const std::string provider = getString("provider", "transitous");
@@ -654,15 +766,34 @@ bool bahnbrett_config_web_start(void) {
   // Set up web server
   AsyncWebServer server(80);
 
-  // GET / — serve the config editor page with embedded current config
+  // GET / — serve the config editor page with embedded current config and
+  // the cached filter options; see ADR 0042 and ADR 0029.
   server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
     std::string config_json = EscapeForScriptEmbed(CurrentConfigJson());
     std::string page = kConfigPageHtml;
-    // Replace placeholder with the escaped JSON
+    // Replace the config placeholder with the escaped JSON.
     const char* placeholder = "CONFIG_JSON_PLACEHOLDER";
     size_t pos = page.find(placeholder);
     if (pos != std::string::npos) {
       page.replace(pos, strlen(placeholder), config_json);
+    }
+    // Replace the options placeholder with the cached filter options. An
+    // absent file leaves null, so the page serves the hardcoded mode list
+    // and empty datalists.
+    const char* options_placeholder = "FILTER_OPTIONS_PLACEHOLDER";
+    pos = page.find(options_placeholder);
+    if (pos != std::string::npos) {
+      std::string options_json = "null";
+      uint8_t* stored = nullptr;
+      const size_t stored_size =
+          filesystem_read_and_allocate("/bahnbrett/filter_options.json",
+                                       &stored);
+      if (stored != nullptr && stored_size > 0) {
+        options_json.assign(reinterpret_cast<const char*>(stored), stored_size);
+      }
+      free(stored);
+      page.replace(pos, strlen(options_placeholder),
+                   EscapeForScriptEmbed(options_json));
     }
     request->send(200, "text/html", page.c_str());
   });
