@@ -8,6 +8,7 @@
 #include <api-client/display.h>
 #include <display.h>
 #include <esp_heap_caps.h>
+#include <filesystem.h>
 #include <trmnl_log.h>
 
 #include <qrcode.h>
@@ -16,6 +17,7 @@
 #include <bahnbrett/bmp_builder.h>
 #include <bahnbrett/config.h>
 #include <bahnbrett/config_store.h>
+#include <bahnbrett/filter_options.h>
 #include <bahnbrett/font_5x7.h>
 #include <bahnbrett/http_client.h>
 #include <bahnbrett/json.h>
@@ -488,6 +490,76 @@ void SaveStationCache(const std::unordered_map<std::string, bahnbrett::Station>&
   }
 }
 
+// Path of the filter-options cache on the flash file system. The name
+// stays inside the 31-character SPIFFS limit; see ADR 0029.
+constexpr const char* kFilterOptionsPath = "/bahnbrett/filter_options.json";
+
+// Writes the filter options of the fetched widgets to the flash file
+// system. The file carries one entry per configured station name, so the
+// config editor can offer the observed lines, modes, and directions. The
+// device writes the file only when the derived content differs, so a short
+// refresh interval cannot wear the flash; see ADR 0029.
+void SaveFilterOptions(const bahnbrett::DashboardConfig& config,
+                       const std::vector<bahnbrett::WidgetData>& data) {
+  bahnbrett::JsonBuilder jb;
+  jb.StartObject();
+  size_t written = 0;
+  for (size_t i = 0; i < config.widgets.size() && i < data.size(); ++i) {
+    const bahnbrett::FilterOptions options =
+        bahnbrett::DeriveFilterOptions(data[i]);
+    if (options.modes.empty() && options.lines.empty() &&
+        options.directions.empty()) {
+      continue;
+    }
+    jb.Key(config.widgets[i].station_name);
+    jb.StartObject();
+    auto WriteList = [&](const char* key,
+                         const std::vector<std::string>& entries) {
+      jb.Key(key);
+      jb.StartArray();
+      for (const auto& entry : entries) {
+        jb.String(entry);
+      }
+      jb.EndArray();
+      jb.Comma();
+    };
+    WriteList("modes", options.modes);
+    WriteList("lines", options.lines);
+    WriteList("directions", options.directions);
+    jb.EndObject();
+    jb.Comma();
+    ++written;
+  }
+  jb.EndObject();
+  if (written == 0) {
+    return;
+  }
+  const std::string content = jb.str();
+
+  // A stored file with the same content skips the write.
+  uint8_t* stored = nullptr;
+  const size_t stored_size =
+      filesystem_read_and_allocate(kFilterOptionsPath, &stored);
+  const bool unchanged =
+      stored != nullptr && stored_size == content.size() &&
+      memcmp(stored, content.data(), stored_size) == 0;
+  free(stored);
+  if (unchanged) {
+    return;
+  }
+
+  // The write helper takes a non-const buffer and writes nothing into it.
+  if (filesystem_write_to_file(
+          kFilterOptionsPath,
+          reinterpret_cast<uint8_t*>(const_cast<char*>(content.data())),
+          content.size())) {
+    Log_info("[bahnbrett] The device stored the filter options for %u stations.",
+             (unsigned)written);
+  } else {
+    Log_info("[bahnbrett] The device cannot store the filter options. The flash file system is full or missing.");
+  }
+}
+
 // Writes the configured refresh interval to the sleep-timer key that
 // goToSleep() reads the interval through the firmware's refreshInterval,
 // which owns the same "refresh_rate" NVS entry in the "data" namespace.
@@ -734,6 +806,9 @@ https_request_err_e bahnbrett_local_render(void)
     }
     SaveStationCache(current, provider_name, config.home_city);
   }
+
+  // The options cache feeds the config editor; see ADR 0029.
+  SaveFilterOptions(config, data);
 
   Log_info("[bahnbrett] The provider made %d station lookups with %d failures and %d departure lookups with %d failures. The last failure kind is %d with status %d.",
            report.station_lookups, report.station_lookup_failures,

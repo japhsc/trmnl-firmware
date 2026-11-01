@@ -126,6 +126,15 @@ void filesystem_purge_old_file(const char *name) {
       continue;
     }
 
+    // Bahnbrett keeps its filter options under bahnbrett/ and refreshes
+    // them on content change only. The purge must not delete them; see
+    // ADR 0029.
+    if (strncmp(file.name(), "bahnbrett/", 10) == 0) {
+      Log_info("Skipping bahnbrett file \"%s\"", file.name());
+      file.close();
+      continue;
+    }
+
     s = (char *)file.name();
 
     timestamp = filesystem_extract_timestamp(s);

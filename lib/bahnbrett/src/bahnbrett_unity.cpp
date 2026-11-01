@@ -7,6 +7,7 @@
 #include "../../../../../src/bitmap.cpp"
 #include "../../../../../src/bmp_builder.cpp"
 #include "../../../../../src/config.cpp"
+#include "../../../../../src/filter_options.cpp"
 #include "../../../../../src/filters.cpp"
 #include "../../../../../src/hmac_sha1.cpp"
 #include "../../../../../src/hvv_geofox_provider.cpp"
