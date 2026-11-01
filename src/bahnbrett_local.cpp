@@ -144,16 +144,6 @@ bahnbrett::Bitmap MakeStaticBitmap(const bahnbrett::DashboardConfig& config) {
 
 bool PresentBitmap(const bahnbrett::DashboardConfig& config,
                    bahnbrett::Bitmap* bitmap) {
-  // The upstream display stack that the rebase pulled in cannot drive a
-  // partial refresh cleanly on this panel: a completely changed frame
-  // left both frames faintly visible, and a dashboard partial over a
-  // full refresh overlapped the old image. The root cause sits upstream,
-  // in the new bb_epaper pin and the per-draw panel re-initialization,
-  // so the Bahnbrett build refuses the partial path entirely. The
-  // maximum_compatibility switch forces the full refresh. A full refresh
-  // takes a few seconds and the refresh interval is at least 30 seconds,
-  // so the longer panel update changes nothing for the user.
-  apiDisplayResult.response.maximum_compatibility = true;
   // The display layer flips rows at the panel size it reports, so the
   // present step checks the bitmap against the panel itself, not against
   // the render config. A clamped render (see ClampPanelToBuffer) fails
