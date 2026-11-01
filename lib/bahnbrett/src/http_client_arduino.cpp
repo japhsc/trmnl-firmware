@@ -1,0 +1,14 @@
+// Wrapper: compile the shared http_client_arduino.cpp from the core repo.
+// The core copy in firmware/src/ stays authoritative; see ADR 0048. The
+// direct framework includes let the PlatformIO dependency finder link the
+// framework libraries to this library, because the real http_client.h
+// lives outside this tree and the finder cannot follow it.
+#if defined(ARDUINO)
+
+#include <HTTPClient.h>
+#include <Stream.h>
+#include <WiFiClientSecure.h>
+
+#include "../../../../../src/http_client_arduino.cpp"
+
+#endif  // ARDUINO
