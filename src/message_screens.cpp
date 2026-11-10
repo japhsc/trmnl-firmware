@@ -656,6 +656,12 @@ static void draw_wifi_connect_setup_message(const char *fw_version, String messa
   bbep.setCursor((bbep.width() - rect.w) / 2, bbep.height() - 100 - rect.h);
 #endif
   bbep.println(string2);
+#ifdef BAHNBRETT_LOCAL_RENDER
+  // The setup page address is the soft AP address in WifiCaptive::startPortal().
+  // Keep both in sync. Not every phone opens the page on its own.
+  const char string_portal[] = "and open http://4.3.2.1 in a browser,";
+  draw_centered_line(string_portal, -1);
+#endif
   const char string3[] = "or scan the QR code for help";
   draw_centered_line(string3, -1);
 #ifdef __BB_EPAPER__
