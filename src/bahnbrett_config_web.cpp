@@ -13,6 +13,7 @@
 
 #include <filesystem.h>
 
+#include <config.h>
 #include <bahnbrett/config.h>
 #include <bahnbrett/config_store.h>
 #include <bahnbrett/json.h>
@@ -113,9 +114,9 @@ static const char kConfigPageHtml[] PROGMEM = R"=====(
 <input type="number" id="countdown_minutes" min="1" max="60">
 <div class="hint">Departures within this many minutes are shown as "X min" instead of clock time</div>
 
-<label for="min_departure_minutes">Min departure offset (minutes)</label>
-<input type="number" id="min_departure_minutes" min="0" max="120">
-<div class="hint">Hide departures sooner than this many minutes from now</div>
+<label for="min_departure_minutes">Min departure offset per widget (minutes)</label>
+<input type="text" id="min_departure_minutes" placeholder="2,6,5" inputmode="numeric">
+<div class="hint">Hide departures sooner than this many minutes from now. One value per station widget, comma-separated, in widget order (e.g. 2,6,5). With fewer values than widgets the last value applies to the rest; extra values are ignored. A single value applies to every widget.</div>
 
 <label for="max_departure_minutes">Max departure lookahead (minutes)</label>
 <input type="number" id="max_departure_minutes" min="5" max="1440">
@@ -272,9 +273,9 @@ function widgetSection(i, w) {
               '" data-mode="' + esc(m) + '"' + (on ? ' checked' : '') +
               '><label for="w' + i + '_mode_' + j + '">' + esc(m) + '</label></div>';
   }
-  var sub = function(name, list, denyId, taId, datalist, hint) {
+  var sub = function(name, list, denyKey, taId, datalist, hint) {
     return '<details' + (list && list.length ? ' open' : '') + '><summary>' + name + '</summary>' +
-           denyBox(denyId, !!w[denyId]) +
+           denyBox('w' + i + '_' + denyKey, !!w[denyKey]) +
            '<textarea id="' + taId + '" rows="2" list="' + datalist + '">' +
            esc((list || []).join('\n')) + '</textarea>' +
            '<div class="hint">' + hint + '</div></details>';
@@ -282,12 +283,12 @@ function widgetSection(i, w) {
   return '<details class="widget" open><summary>' + esc(title) + '</summary>' +
          '<label for="w' + i + '_station">Station name</label>' +
          '<input type="text" id="w' + i + '_station" value="' + esc(w.station || '') + '">' +
-         sub('Lines', w.lines, 'w' + i + '_lines_deny', 'w' + i + '_lines', 'opt-lines',
+         sub('Lines', w.lines, 'lines_deny', 'w' + i + '_lines', 'opt-lines',
              'One per line. A trailing * means prefix match, e.g. "ICE*".') +
          '<details' + ((w.modes || []).length ? ' open' : '') + '><summary>Modes</summary>' +
          denyBox('w' + i + '_modes_deny', !!w.modes_deny) +
          '<div class="mode-list">' + checks + '</div></details>' +
-         sub('Directions', w.directions, 'w' + i + '_directions_deny', 'w' + i + '_directions',
+         sub('Directions', w.directions, 'directions_deny', 'w' + i + '_directions',
              'opt-directions', 'Substring match, one per line, e.g. "Pankow".') +
          '<button type="button" class="btn-remove" onclick="removeWidget(' + i + ')">Remove</button>' +
          '</details>';
@@ -301,7 +302,38 @@ function renderWidgets() {
   list.innerHTML = html;
 }
 
+// Reads one widget per rendered section. With keepEmpty false, a section
+// without a station name is skipped, as the server skips it anyway.
+function readWidgets(keepEmpty) {
+  var getLines = function(id) {
+    var v = document.getElementById(id).value.trim();
+    return v ? v.split('\n').map(function(s){return s.trim()}).filter(function(s){return s}) : [];
+  };
+  var widgets = [];
+  var sections = document.querySelectorAll('details.widget');
+  for (var i = 0; i < sections.length; ++i) {
+    var station = document.getElementById('w' + i + '_station').value.trim();
+    if (!station && !keepEmpty) continue;
+    var modes = [];
+    var boxes = sections[i].querySelectorAll('input[data-mode]');
+    for (var j = 0; j < boxes.length; ++j) if (boxes[j].checked) modes.push(boxes[j].getAttribute('data-mode'));
+    widgets.push({
+      station: station,
+      lines: getLines('w' + i + '_lines'),
+      lines_deny: document.getElementById('w' + i + '_lines_deny').checked,
+      modes: modes,
+      modes_deny: document.getElementById('w' + i + '_modes_deny').checked,
+      directions: getLines('w' + i + '_directions'),
+      directions_deny: document.getElementById('w' + i + '_directions_deny').checked
+    });
+  }
+  return widgets;
+}
+
+// Add and Remove rebuild every section from cfg.widgets, so they first
+// copy the unsaved edits from the form into it.
 function addWidget() {
+  cfg.widgets = readWidgets(true);
   cfg.widgets.push({station: '', lines: [], lines_deny: false,
                     modes: [], modes_deny: false,
                     directions: [], directions_deny: false});
@@ -310,6 +342,7 @@ function addWidget() {
 
 function removeWidget(i) {
   if (!confirm('Remove this station widget?')) return;
+  cfg.widgets = readWidgets(true);
   cfg.widgets.splice(i, 1);
   renderWidgets();
 }
@@ -331,7 +364,7 @@ function populate() {
   setVal('max_departures_per_group', cfg.max_departures_per_group);
   setVal('aggregate_by_destination', cfg.aggregate_by_destination);
   setVal('countdown_minutes', cfg.countdown_minutes);
-  setVal('min_departure_minutes', cfg.min_departure_minutes);
+  setVal('min_departure_minutes', Array.isArray(cfg.min_departure_minutes) ? cfg.min_departure_minutes.join(',') : cfg.min_departure_minutes);
   setVal('max_departure_minutes', cfg.max_departure_minutes);
   setVal('refresh_seconds', cfg.refresh_seconds);
   setVal('header_font_scale', cfg.header_font_scale);
@@ -378,6 +411,17 @@ function showStatus(msg, ok) {
   s.style.display = 'block';
 }
 
+// One minimum offset per widget, in widget order; see ADR 0070. Entries
+// that are not whole numbers of zero or more are skipped.
+function parseMinutes(str) {
+  var out = [];
+  str.split(',').forEach(function(s) {
+    s = s.trim();
+    if (/^[0-9]+$/.test(s)) out.push(Math.min(parseInt(s, 10), 120));
+  });
+  return out;
+}
+
 function parseRatios(str) {
   if (!str.trim()) return [];
   return str.split(',').map(function(s) {
@@ -387,30 +431,7 @@ function parseRatios(str) {
 }
 
 function getFormData() {
-  var getLines = function(id) {
-    var v = document.getElementById(id).value.trim();
-    return v ? v.split('\n').map(function(s){return s.trim()}).filter(function(s){return s}) : [];
-  };
-  // Collect one widget per rendered section. The server skips a widget
-  // without a station name.
-  var widgets = [];
-  var sections = document.querySelectorAll('details.widget');
-  for (var i = 0; i < sections.length; ++i) {
-    var station = document.getElementById('w' + i + '_station').value.trim();
-    if (!station) continue;
-    var modes = [];
-    var boxes = sections[i].querySelectorAll('input[data-mode]');
-    for (var j = 0; j < boxes.length; ++j) if (boxes[j].checked) modes.push(boxes[j].getAttribute('data-mode'));
-    widgets.push({
-      station: station,
-      lines: getLines('w' + i + '_lines'),
-      lines_deny: document.getElementById('w' + i + '_lines_deny').checked,
-      modes: modes,
-      modes_deny: document.getElementById('w' + i + '_modes_deny').checked,
-      directions: getLines('w' + i + '_directions'),
-      directions_deny: document.getElementById('w' + i + '_directions_deny').checked
-    });
-  }
+  var widgets = readWidgets(false);
   return {
     widgets: widgets,
     grid_cols: parseInt(document.getElementById('grid_cols').value) || 0,
@@ -421,7 +442,7 @@ function getFormData() {
     max_departures_per_group: parseInt(document.getElementById('max_departures_per_group').value) || 3,
     aggregate_by_destination: document.getElementById('aggregate_by_destination').checked,
     countdown_minutes: parseInt(document.getElementById('countdown_minutes').value) || 15,
-    min_departure_minutes: parseInt(document.getElementById('min_departure_minutes').value) || 0,
+    min_departure_minutes: parseMinutes(document.getElementById('min_departure_minutes').value),
     max_departure_minutes: parseInt(document.getElementById('max_departure_minutes').value) || 180,
     refresh_seconds: parseInt(document.getElementById('refresh_seconds').value) || 900,
     header_font_scale: parseFloat(document.getElementById('header_font_scale').value) || 1.0,
@@ -561,7 +582,11 @@ std::string CurrentConfigJson() {
   jb.Comma();
   jb.KeyBool("aggregate_by_destination", cfg.aggregate_by_destination);
   jb.KeyNumber("max_departures_per_group", cfg.max_departures_per_group);
-  jb.KeyNumber("min_departure_minutes", cfg.min_departure_minutes);
+  jb.Key("min_departure_minutes");
+  jb.StartArray();
+  for (int minutes : cfg.min_departure_minutes) jb.Number(minutes);
+  jb.EndArray();
+  jb.Comma();
   jb.KeyNumber("max_departure_minutes", cfg.max_departure_minutes);
   jb.KeyString("home_city", cfg.home_city);
   jb.KeyBool("show_delays", cfg.show_delays);
@@ -589,6 +614,24 @@ std::string CurrentConfigJson() {
   jb.EndObject();
 
   return jb.str();
+}
+
+// Removes the stored log notes (keys log_0 .. log_9 in the "data"
+// namespace) to free NVS room before a config save.
+static void ClearStoredLogNotes() {
+  Preferences prefs;
+  if (!prefs.begin("data", false)) {
+    return;
+  }
+  int removed = 0;
+  for (int i = 0; i < LOG_MAX_NOTES_NUMBER; ++i) {
+    String key = String(PREFERENCES_LOG_KEY) + String(i);
+    if (prefs.isKey(key.c_str()) && prefs.remove(key.c_str())) {
+      ++removed;
+    }
+  }
+  prefs.end();
+  Serial.printf("[bahnbrett] The config save cleared %d stored log notes to free NVS room.\n", removed);
 }
 
 // Deserialize form JSON into DashboardConfig and save to NVS.
@@ -655,7 +698,14 @@ bool SaveConfigFromJson(const std::string& json_str, std::string* error) {
   config.max_departures_per_group = getInt("max_departures_per_group", 3);
   config.aggregate_by_destination = getBool("aggregate_by_destination", true);
   config.countdown_minutes = getInt("countdown_minutes", 15);
-  config.min_departure_minutes = getInt("min_departure_minutes", 0);
+  // One offset per widget: an array, a comma-separated string, or a
+  // single number for every widget; see ADR 0070 in the Bahnbrett repo.
+  {
+    const auto* v = root.Find("min_departure_minutes");
+    if (v) {
+      bahnbrett::ParseMinDepartureMinutes(*v, &config.min_departure_minutes);
+    }
+  }
   config.max_departure_minutes = getInt("max_departure_minutes", 180);
   config.refresh_seconds = getInt("refresh_seconds", 900);
   config.min_poll_seconds = std::max(30, getInt("min_poll_seconds", 60));
@@ -686,10 +736,31 @@ bool SaveConfigFromJson(const std::string& json_str, std::string* error) {
   config.hvv_key = getString("hvv_key", "");
   config.pinned_tls_cert = getString("pinned_tls_cert", "");
 
+  // The stored log notes share the 20 KB NVS partition with the config.
+  // The Bahnbrett build never submits them (ADR 0041), so the ring of up
+  // to ten notes of about 500 bytes stays full and can leave too little
+  // room for the config. NVS erases the old copy of a string before it
+  // retries on a fresh page, so a failed write loses the stored value,
+  // for example the station list. Clearing the notes first frees that
+  // room; see ADR 0070 in the Bahnbrett repo.
+  ClearStoredLogNotes();
+
+  // A config save drops the station cache, so the next render resolves
+  // every station name under the current lookup ranking. The removal also
+  // frees the cache's NVS room before the save; see ADR 0071.
+  {
+    Preferences prefs;
+    if (prefs.begin("bahnbrett", false)) {
+      prefs.remove("station_map");
+      prefs.remove("station_ts");
+      prefs.end();
+    }
+  }
+
   // Use the free function to persist. The NVS store logs the exact key
   // that fails, so this message names the general cause only.
   if (!bahnbrett::SaveConfigToNvs(config)) {
-    *error = "The device cannot store the config because a value is too large for NVS. Remove stations or filters and save the config again.";
+    *error = "The device cannot store the config because the NVS storage is full or a value is too large. Remove stations or filters and save the config again.";
     return false;
   }
 
